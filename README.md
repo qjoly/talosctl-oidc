@@ -68,21 +68,21 @@ Build the extension image, then use the Talos `imager` to create a custom instal
 ```bash
 # Build and push the extension OCI image
 docker build -t ghcr.io/qjoly/talosctl-oidc:v0.1.0 --target extension .
-docker push ghcr.io/qjoly/talosctl-oidc:v0.1.0
+docker push ghcr.io/qjoly/talosctl-oidc:0.1.0
 
 # Build a custom Talos installer with the extension baked in
-TALOS_VERSION=v1.9.5
-EXTENSION_REF=$(crane digest ghcr.io/qjoly/talosctl-oidc:v0.1.0)
+TALOS_VERSION=v1.12.4
+EXTENSION_REF=$(crane digest ghcr.io/qjoly/talosctl-oidc:0.1.0)
 
 docker run --rm -t -v $PWD/_out:/out \
   ghcr.io/siderolabs/imager:${TALOS_VERSION} installer \
-  --system-extension-image ghcr.io/qjoly/talosctl-oidc:v0.1.0@${EXTENSION_REF}
+  --system-extension-image ghcr.io/qjoly/talosctl-oidc:0.1.0@${EXTENSION_REF}
 
 # Push the custom installer to your registry
-crane push _out/metal-amd64-installer.tar ghcr.io/qjoly/talos-installer:${TALOS_VERSION}
+crane push _out/installer-amd64.tar ghcr.io/qjoly/talos-oidc-installer:${TALOS_VERSION}
 
 # Install or upgrade with it
-talosctl upgrade --image ghcr.io/qjoly/talos-installer:${TALOS_VERSION}
+talosctl upgrade --image ghcr.io/qjoly/talos-oidc-installer:${TALOS_VERSION}
 ```
 
 See [Deploying as a Talos Extension](#deploying-as-a-talos-extension) for detailed configuration.
@@ -308,7 +308,7 @@ This produces `_out/metal-amd64-installer.tar`.
 Push it to your container registry:
 
 ```bash
-crane push _out/metal-amd64-installer.tar ghcr.io/qjoly/talos-installer:${TALOS_VERSION}
+crane push _out/metal-amd64-installer.tar ghcr.io/qjoly/talos-oidc-installer:${TALOS_VERSION}
 ```
 
 ### 3. Install or upgrade with the custom installer
@@ -318,13 +318,13 @@ crane push _out/metal-amd64-installer.tar ghcr.io/qjoly/talos-installer:${TALOS_
 ```yaml
 machine:
   install:
-    image: ghcr.io/qjoly/talos-installer:v1.9.5
+    image: ghcr.io/qjoly/talos-oidc-installer:v1.9.5
 ```
 
 **For an existing cluster**, upgrade nodes to the new installer:
 
 ```bash
-talosctl upgrade --image ghcr.io/qjoly/talos-installer:v1.9.5
+talosctl upgrade --image ghcr.io/qjoly/talos-oidc-installer:v1.9.5
 ```
 
 > You can also build an ISO for bare-metal boot by replacing `installer` with `iso` in the imager command.
