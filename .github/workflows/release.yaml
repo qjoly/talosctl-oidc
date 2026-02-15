@@ -109,7 +109,7 @@ jobs:
 
       - name: Debug metadata outputs
         run: |
-          echo "Generated tags:"
+          echo "Generated tags (for debugging):"
           echo "${{ steps.meta.outputs.tags }}"
 
       - name: Build and push extension image
@@ -170,7 +170,7 @@ jobs:
         id: extension-digest
         run: |
           # Determine the tag to use: semver tag from ref_name, or 'dev' for non-tag runs
-          if [[ "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+          if [[ "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
             TAG="${{ github.ref_name }}"
           else
             TAG="dev"
