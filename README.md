@@ -13,33 +13,29 @@ Talos Linux uses **mTLS (mutual TLS) with client certificates** for API authenti
 5. The client writes the certificate to `~/.talos/config`
 6. When the certificate expires, the user must re-authenticate via OIDC
 
-```
-                         +------------------+
-                         |  OIDC Provider   |
-                         | (Authentik, Dex, |
-                         |  Keycloak, etc.) |
-                         +--------+---------+
-                                  |
-                    1. Authorization Code + PKCE
-                                  |
-+----------+    login    +--------v---------+
-|  Browser |<------------|  talosctl-oidc   |
-+----------+             |     (client)     |
-                         +--------+---------+
-                                  |
-                    2. POST /exchange {id_token}
-                                  |
-                         +--------v---------+
-                         |  talosctl-oidc   |
-                         |     (server)     |
-                         |  holds Talos CA  |
-                         +--------+---------+
-                                  |
-                    3. validates token, signs ephemeral cert
-                                  |
-                         +--------v---------+    talosctl reads
-                         |  ~/.talos/config  |---------------->  Talos Node
-                         +------------------+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Browser
+    participant Client as talosctl-oidc (client)
+    participant OIDC as OIDC Provider
+    participant Server as talosctl-oidc (server)
+    participant Talos as Talos Node
+
+    User->>Client: talosctl-oidc login
+    Client->>Browser: Open authorization URL
+    Browser->>OIDC: Authorization Code + PKCE
+    OIDC->>Browser: Redirect with auth code
+    Browser->>Client: Callback with auth code
+    Client->>OIDC: Exchange code for tokens
+    OIDC->>Client: ID token + access token
+    Client->>Server: POST /exchange {id_token}
+    Server->>OIDC: Fetch JWKS & validate token
+    OIDC->>Server: Public keys
+    Server->>Server: Sign ephemeral cert with Talos CA
+    Server->>Client: {ca, cert, key, endpoints}
+    Client->>Client: Write to ~/.talos/config
+    User->>Talos: talosctl version (mTLS with ephemeral cert)
 ```
 
 ## Prerequisites
@@ -67,20 +63,26 @@ sudo mv talosctl-oidc /usr/local/bin/
 
 ### As a Talos system extension
 
-Build the extension image and push it to a container registry:
+Build the extension image, then use the Talos `imager` to create a custom installer that includes it:
 
 ```bash
+# Build and push the extension OCI image
 docker build -t ghcr.io/qjoly/talosctl-oidc:v0.1.0 --target extension .
 docker push ghcr.io/qjoly/talosctl-oidc:v0.1.0
-```
 
-Then add the extension to your Talos machine config:
+# Build a custom Talos installer with the extension baked in
+TALOS_VERSION=v1.9.5
+EXTENSION_REF=$(crane digest ghcr.io/qjoly/talosctl-oidc:v0.1.0)
 
-```yaml
-machine:
-  install:
-    extensions:
-      - image: ghcr.io/qjoly/talosctl-oidc:v0.1.0
+docker run --rm -t -v $PWD/_out:/out \
+  ghcr.io/siderolabs/imager:${TALOS_VERSION} installer \
+  --system-extension-image ghcr.io/qjoly/talosctl-oidc:v0.1.0@${EXTENSION_REF}
+
+# Push the custom installer to your registry
+crane push _out/metal-amd64-installer.tar ghcr.io/qjoly/talos-installer:${TALOS_VERSION}
+
+# Install or upgrade with it
+talosctl upgrade --image ghcr.io/qjoly/talos-installer:${TALOS_VERSION}
 ```
 
 See [Deploying as a Talos Extension](#deploying-as-a-talos-extension) for detailed configuration.
@@ -276,7 +278,7 @@ talosctl-oidc status [flags]
 
 ## Deploying as a Talos Extension
 
-The server can run as a Talos system extension service on your control plane nodes.
+Talos system extensions must be **baked into the installer image** — you cannot install them at runtime. This requires building a custom installer image using the Talos `imager`.
 
 ### 1. Build and push the extension image
 
@@ -285,18 +287,53 @@ docker build -t ghcr.io/qjoly/talosctl-oidc:v0.1.0 --target extension .
 docker push ghcr.io/qjoly/talosctl-oidc:v0.1.0
 ```
 
-### 2. Add the extension to your machine config
+### 2. Build a custom Talos installer with the extension
+
+Use the Talos `imager` container to produce an installer image that includes the extension. You need [`crane`](https://github.com/google/go-containerregistry/tree/main/cmd/crane) to push the result.
+
+```bash
+# Determine the digest of your extension image
+EXTENSION_REF=$(crane digest ghcr.io/qjoly/talosctl-oidc:v0.1.0)
+
+# Build the installer (adjust the Talos version to match your cluster)
+TALOS_VERSION=v1.9.5
+
+docker run --rm -t -v $PWD/_out:/out \
+  ghcr.io/siderolabs/imager:${TALOS_VERSION} installer \
+  --system-extension-image ghcr.io/qjoly/talosctl-oidc:v0.1.0@${EXTENSION_REF}
+```
+
+This produces `_out/metal-amd64-installer.tar`.
+
+Push it to your container registry:
+
+```bash
+crane push _out/metal-amd64-installer.tar ghcr.io/qjoly/talos-installer:${TALOS_VERSION}
+```
+
+### 3. Install or upgrade with the custom installer
+
+**For a new installation**, reference the custom installer in your machine config:
 
 ```yaml
 machine:
   install:
-    extensions:
-      - image: ghcr.io/qjoly/talosctl-oidc:v0.1.0
+    image: ghcr.io/qjoly/talos-installer:v1.9.5
 ```
 
-### 3. Configure the extension service
+**For an existing cluster**, upgrade nodes to the new installer:
+
+```bash
+talosctl upgrade --image ghcr.io/qjoly/talos-installer:v1.9.5
+```
+
+> You can also build an ISO for bare-metal boot by replacing `installer` with `iso` in the imager command.
+
+### 4. Configure the extension service
 
 The extension reads its configuration from an `ExtensionServiceConfig` document in the Talos machine config. The CA certificate and key are provided as config files, and runtime flags are set via environment variables.
+
+Add this to your machine config (or apply it via `talosctl apply-config`):
 
 ```yaml
 apiVersion: v1alpha1
@@ -335,7 +372,9 @@ All `serve` flags can be set via environment variables (prefix `TALOSCTL_OIDC_`)
 | `TALOSCTL_OIDC_ENDPOINTS` | `--endpoints` (comma-separated) |
 | `TALOSCTL_OIDC_ROLES` | `--roles` (comma-separated) |
 
-### 4. Manage the extension service
+### 5. Manage the extension service
+
+After the node boots (or upgrades) with the custom installer, the extension runs as `ext-talosctl-oidc`:
 
 ```bash
 # Check service status
