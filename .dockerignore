@@ -1,0 +1,8 @@
+talos/
+temp/
+.git/
+talosctl-oidc
+talos-admin.crt
+talos-admin.key
+talos-ca.crt
+README.md

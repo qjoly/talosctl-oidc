@@ -1,0 +1,26 @@
+name: talosctl-oidc
+container:
+  entrypoint: ./talosctl-oidc
+  args:
+    - serve
+    - --ca-cert
+    - /config/ca.crt
+    - --ca-key
+    - /config/ca.key
+    - --listen
+    - :8443
+  mounts:
+    # TLS root certificates for OIDC provider HTTPS validation
+    - source: /etc/ssl/certs
+      destination: /etc/ssl/certs
+      type: bind
+      options:
+        - rbind
+        - ro
+depends:
+  - network:
+      - addresses
+      - connectivity
+      - etcfiles
+  - configuration: true
+restart: always

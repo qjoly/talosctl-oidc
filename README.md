@@ -1,43 +1,52 @@
 # talosctl-oidc
 
-OIDC-gated credential plugin for [talosctl](https://www.talos.dev/). Authenticates users through any standard OIDC provider before writing pre-provisioned Talos client certificates into the `talosconfig`.
+OIDC certificate exchange server and client for [Talos Linux](https://www.talos.dev/). Enables OIDC-based access control for `talosctl` by issuing ephemeral short-lived client certificates signed by the Talos CA.
 
 ## How It Works
 
-Talos Linux uses **mTLS (mutual TLS) with client certificates** for API authentication. There is no native OIDC support in the Talos API. This tool bridges the gap by acting as a gatekeeper:
+Talos Linux uses **mTLS (mutual TLS) with client certificates** for API authentication. There is no native OIDC support in the Talos API. This tool bridges the gap through a **certificate exchange server** model:
 
-1. The user runs `talosctl-oidc login`
-2. A browser window opens for OIDC authentication (Authorization Code flow with PKCE)
-3. Upon successful login, the tool writes pre-provisioned admin client certificates into `~/.talos/config`
-4. The user can then use `talosctl` normally
-
-OIDC tokens are cached in the **system keychain** (macOS Keychain, GNOME Keyring, KDE Wallet, or Windows Credential Manager). On subsequent runs, if the token is still valid the browser step is skipped. Expired tokens are refreshed automatically when a refresh token is available.
+1. A **server** (`talosctl-oidc serve`) holds the Talos CA private key and runs alongside the cluster (as a Talos extension or standalone)
+2. A **user** runs `talosctl-oidc login`, which opens a browser for OIDC authentication (Authorization Code + PKCE)
+3. The client sends the resulting ID token to the server
+4. The server validates the token (signature, issuer, audience, expiry) and signs an **ephemeral short-lived client certificate** (e.g., 1 hour)
+5. The client writes the certificate to `~/.talos/config`
+6. When the certificate expires, the user must re-authenticate via OIDC
 
 ```
                          +------------------+
                          |  OIDC Provider   |
-                         | (Keycloak, Dex,  |
-                         |  Authelia, etc.) |
+                         | (Authentik, Dex, |
+                         |  Keycloak, etc.) |
                          +--------+---------+
                                   |
-                    Authorization Code + PKCE
+                    1. Authorization Code + PKCE
                                   |
-+----------+    login    +--------v---------+    writes certs    +----------------+
-|  Browser |<------------|  talosctl-oidc   |------------------>|  ~/.talos/config|
-+----------+             +------------------+                   +-------+--------+
-                                  |                                     |
-                           stores token                          talosctl reads
-                                  |                                     |
-                         +--------v---------+                   +-------v--------+
-                         | System Keychain  |                   |   Talos Node   |
-                         +------------------+                   +----------------+
++----------+    login    +--------v---------+
+|  Browser |<------------|  talosctl-oidc   |
++----------+             |     (client)     |
+                         +--------+---------+
+                                  |
+                    2. POST /exchange {id_token}
+                                  |
+                         +--------v---------+
+                         |  talosctl-oidc   |
+                         |     (server)     |
+                         |  holds Talos CA  |
+                         +--------+---------+
+                                  |
+                    3. validates token, signs ephemeral cert
+                                  |
+                         +--------v---------+    talosctl reads
+                         |  ~/.talos/config  |---------------->  Talos Node
+                         +------------------+
 ```
 
 ## Prerequisites
 
-- **Go 1.21+** (to build from source)
+- **Go 1.25+** (to build from source)
 - **A running Talos cluster** with API access
-- **Pre-provisioned client certificates** (CA cert, client cert, client key) with admin privileges on the Talos nodes
+- **The Talos API CA certificate and private key** (from `controlplane.yaml`, the first `ca:` block under `machine.ca`)
 - **An OIDC provider** with a configured client application (any OIDC-compliant provider works)
 
 ## Installation
@@ -56,6 +65,26 @@ Move the binary to a directory in your `$PATH`:
 sudo mv talosctl-oidc /usr/local/bin/
 ```
 
+### As a Talos system extension
+
+Build the extension image and push it to a container registry:
+
+```bash
+docker build -t ghcr.io/qjoly/talosctl-oidc:v0.1.0 --target extension .
+docker push ghcr.io/qjoly/talosctl-oidc:v0.1.0
+```
+
+Then add the extension to your Talos machine config:
+
+```yaml
+machine:
+  install:
+    extensions:
+      - image: ghcr.io/qjoly/talosctl-oidc:v0.1.0
+```
+
+See [Deploying as a Talos Extension](#deploying-as-a-talos-extension) for detailed configuration.
+
 ## Setup
 
 ### 1. Configure your OIDC provider
@@ -64,27 +93,30 @@ Create a client application in your OIDC provider with the following settings:
 
 | Setting | Value |
 |---------|-------|
-| Client type | Public (recommended) or Confidential |
+| Client type | Public |
 | Grant type | Authorization Code |
 | Redirect URI | `http://127.0.0.1:8900/callback` |
 | Scopes | `openid`, `profile`, `email` |
 | PKCE | Enabled (S256) |
 
-#### Keycloak example
+#### Authentik
 
-1. Go to your Keycloak admin console
-2. Select your realm (or create one, e.g. `talos`)
-3. Go to **Clients** > **Create client**
-4. Set **Client ID** to `talosctl` (or any name you prefer)
-5. Set **Client authentication** to **Off** (public client)
-6. Enable **Standard flow** (Authorization Code)
-7. Set **Valid redirect URIs** to `http://127.0.0.1:8900/callback`
-8. Under **Advanced** > **Proof Key for Code Exchange**, set to `S256`
-9. Save
+1. Go to **Admin** > **Applications** > **Providers** > **Create**
+2. Select **OAuth2/OpenID Provider**
+3. Set **Client type** to **Public**
+4. Set **Redirect URIs** to `http://127.0.0.1:8900/callback`
+5. Under **Advanced**, ensure **Subject mode** is set appropriately
+6. Create an **Application** linked to this provider
 
-#### Dex example
+#### Keycloak
 
-Add this to your Dex configuration:
+1. Go to your Keycloak admin console > **Clients** > **Create client**
+2. Set **Client authentication** to **Off** (public client)
+3. Enable **Standard flow** (Authorization Code)
+4. Set **Valid redirect URIs** to `http://127.0.0.1:8900/callback`
+5. Under **Advanced** > **Proof Key for Code Exchange**, set to `S256`
+
+#### Dex
 
 ```yaml
 staticClients:
@@ -95,100 +127,107 @@ staticClients:
     public: true
 ```
 
-#### Authelia example
+### 2. Extract the Talos API CA
 
-Add this to your Authelia configuration:
-
-```yaml
-identity_providers:
-  oidc:
-    clients:
-      - client_id: talosctl
-        client_name: "Talosctl OIDC"
-        public: true
-        authorization_policy: two_factor
-        redirect_uris:
-          - http://127.0.0.1:8900/callback
-        scopes:
-          - openid
-          - profile
-          - email
-        pkce_challenge_method: S256
-```
-
-### 2. Obtain Talos client certificates
-
-You need pre-provisioned admin client certificates for your Talos cluster. These are typically generated during cluster bootstrapping. You can extract them from an existing `talosconfig`:
+The server needs the Talos API CA certificate and private key to sign client certificates. These are found in your cluster's `controlplane.yaml` (the first `ca:` block under `machine:`).
 
 ```bash
-# Extract from an existing talosconfig
-talosctl config info
-
-# Or generate new client certificates
-talosctl gen config my-cluster https://<controlplane-ip>:6443
-# This creates talosconfig with embedded certs
+# From controlplane.yaml, extract the first ca block
+yq '.machine.ca.crt' controlplane.yaml | base64 -d > talos-ca.crt
+yq '.machine.ca.key' controlplane.yaml | base64 -d > talos-ca.key
 ```
 
-Extract the individual certificate files from your existing `talosconfig`:
+> **Important**: This is the **machine/API CA**, not the OS-level CA from `secrets.yaml`. The API CA is the one that signs client certificates used by `talosctl`.
+
+### 3. Start the server
 
 ```bash
-# Decode the base64 certificates from an existing talosconfig
-talosctl config info --output json | jq -r '.ca' | base64 -d > talos-ca.crt
-talosctl config info --output json | jq -r '.crt' | base64 -d > talos-admin.crt
-talosctl config info --output json | jq -r '.key' | base64 -d > talos-admin.key
+talosctl-oidc serve \
+  --ca-cert talos-ca.crt \
+  --ca-key talos-ca.key \
+  --issuer-url https://idp.example.com/application/o/talos-oidc/ \
+  --client-id <your-client-id> \
+  --endpoints 10.0.0.1,10.0.0.2 \
+  --listen :8443 \
+  --cert-ttl 1h \
+  --roles os:admin
 ```
 
-Or if you have the raw certificate files from your cluster bootstrap, use those directly.
-
-Store these files in a secure location (e.g. `~/.talos/certs/`):
-
-```bash
-mkdir -p ~/.talos/certs
-chmod 700 ~/.talos/certs
-mv talos-ca.crt talos-admin.crt talos-admin.key ~/.talos/certs/
-chmod 600 ~/.talos/certs/*
-```
-
-### 3. Login
+### 4. Login
 
 ```bash
 talosctl-oidc login \
-  --provider https://idp.example.com/realms/talos \
-  --client-id talosctl \
-  --ca-cert ~/.talos/certs/talos-ca.crt \
-  --client-cert ~/.talos/certs/talos-admin.crt \
-  --client-key ~/.talos/certs/talos-admin.key \
-  --endpoints 10.0.0.1,10.0.0.2,10.0.0.3
+  --provider https://idp.example.com/application/o/talos-oidc/ \
+  --client-id <your-client-id> \
+  --server http://localhost:8443 \
+  --context-name oidc \
+  --callback-port 8900
 ```
 
 This will:
 1. Open your browser to the OIDC provider login page
 2. Wait for you to authenticate
-3. Cache the OIDC token in your system keychain
-4. Write the certificates to `~/.talos/config` under the `oidc` context
-5. Set `oidc` as the active context
+3. Exchange the ID token with the cert server for an ephemeral certificate
+4. Write the certificate to `~/.talos/config` under the `oidc` context
 
-### 4. Use talosctl
+### 5. Use talosctl
 
-After login, `talosctl` works normally using the `oidc` context:
-
-```bash
-talosctl version
-talosctl get members
-talosctl dashboard
-```
-
-Or explicitly select the context:
+After login, `talosctl` works normally:
 
 ```bash
 talosctl --context oidc version
+talosctl --context oidc get members
+talosctl --context oidc dashboard
 ```
 
 ## Commands
 
+### `serve`
+
+Start the certificate exchange server.
+
+```bash
+talosctl-oidc serve [flags]
+```
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--ca-cert` | Yes | | Path to Talos CA certificate |
+| `--ca-key` | Yes | | Path to Talos CA private key |
+| `--issuer-url` | Yes | | OIDC issuer URL for token validation |
+| `--client-id` | Yes | | Expected OIDC client ID / audience |
+| `--endpoints` | Yes | | Talos node endpoints to return to clients |
+| `--client-secret` | No | | OIDC client secret (for HS256-signed tokens) |
+| `--listen` | No | `:8443` | Address to listen on |
+| `--cert-ttl` | No | `1h` | Lifetime of issued client certificates |
+| `--roles` | No | `os:admin` | Talos roles to assign to certificates |
+
+#### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/exchange` | POST | Exchange an OIDC ID token for an ephemeral certificate |
+| `/healthz` | GET | Health check (returns `200 OK`) |
+
+**Exchange request:**
+```json
+{"id_token": "eyJ..."}
+```
+
+**Exchange response:**
+```json
+{
+  "ca": "-----BEGIN CERTIFICATE-----\n...",
+  "cert": "-----BEGIN CERTIFICATE-----\n...",
+  "key": "-----BEGIN ED25519 PRIVATE KEY-----\n...",
+  "endpoints": ["10.0.0.1"],
+  "ttl_seconds": 3600
+}
+```
+
 ### `login`
 
-Authenticate via OIDC and write credentials to talosconfig.
+Authenticate via OIDC and obtain ephemeral Talos credentials.
 
 ```bash
 talosctl-oidc login [flags]
@@ -198,10 +237,7 @@ talosctl-oidc login [flags]
 |------|----------|---------|-------------|
 | `--provider` | Yes | | OIDC issuer URL |
 | `--client-id` | Yes | | OIDC client ID |
-| `--ca-cert` | Yes | | Path to Talos CA certificate |
-| `--client-cert` | Yes | | Path to pre-provisioned client certificate |
-| `--client-key` | Yes | | Path to pre-provisioned client key |
-| `--endpoints` | Yes | | Talos node endpoints (comma-separated) |
+| `--server` | Yes | | Cert exchange server URL (e.g. `http://localhost:8443`) |
 | `--client-secret` | No | | OIDC client secret (for confidential clients) |
 | `--scopes` | No | `openid,profile,email` | OIDC scopes |
 | `--callback-port` | No | `8900` | Local callback server port |
@@ -238,33 +274,88 @@ talosctl-oidc status [flags]
 | `--context-name` | No | `oidc` | Name of the talosconfig context to check |
 | `--talosconfig` | No | `~/.talos/config` | Path to talosconfig file |
 
-Example output:
+## Deploying as a Talos Extension
 
+The server can run as a Talos system extension service on your control plane nodes.
+
+### 1. Build and push the extension image
+
+```bash
+docker build -t ghcr.io/qjoly/talosctl-oidc:v0.1.0 --target extension .
+docker push ghcr.io/qjoly/talosctl-oidc:v0.1.0
 ```
-Context: oidc
 
---- OIDC Token ---
-Issuer:    https://idp.example.com/realms/talos
-Client ID: talosctl
-Status:    valid (expires in 4m30s)
-Refresh:   available
+### 2. Add the extension to your machine config
 
---- Talosconfig ---
-Path:      /home/user/.talos/config
-Status:    context "oidc" exists
-Endpoints: [10.0.0.1 10.0.0.2 10.0.0.3]
-Active:    yes (current context)
-Client cert: present
+```yaml
+machine:
+  install:
+    extensions:
+      - image: ghcr.io/qjoly/talosctl-oidc:v0.1.0
+```
+
+### 3. Configure the extension service
+
+The extension reads its configuration from an `ExtensionServiceConfig` document in the Talos machine config. The CA certificate and key are provided as config files, and runtime flags are set via environment variables.
+
+```yaml
+apiVersion: v1alpha1
+kind: ExtensionServiceConfig
+name: talosctl-oidc
+configFiles:
+  - content: |
+      -----BEGIN CERTIFICATE-----
+      <your Talos API CA certificate>
+      -----END CERTIFICATE-----
+    mountPath: /config/ca.crt
+  - content: |
+      -----BEGIN ED25519 PRIVATE KEY-----
+      <your Talos API CA private key>
+      -----END ED25519 PRIVATE KEY-----
+    mountPath: /config/ca.key
+environment:
+  - TALOSCTL_OIDC_ISSUER_URL=https://idp.example.com/application/o/talos-oidc/
+  - TALOSCTL_OIDC_CLIENT_ID=your-client-id
+  - TALOSCTL_OIDC_ENDPOINTS=10.0.0.1,10.0.0.2
+  - TALOSCTL_OIDC_CERT_TTL=1h
+  - TALOSCTL_OIDC_ROLES=os:admin
+```
+
+All `serve` flags can be set via environment variables (prefix `TALOSCTL_OIDC_`). CLI flags take precedence when both are set.
+
+| Environment Variable | Flag |
+|---------------------|------|
+| `TALOSCTL_OIDC_CA_CERT` | `--ca-cert` |
+| `TALOSCTL_OIDC_CA_KEY` | `--ca-key` |
+| `TALOSCTL_OIDC_LISTEN` | `--listen` |
+| `TALOSCTL_OIDC_CERT_TTL` | `--cert-ttl` |
+| `TALOSCTL_OIDC_ISSUER_URL` | `--issuer-url` |
+| `TALOSCTL_OIDC_CLIENT_ID` | `--client-id` |
+| `TALOSCTL_OIDC_CLIENT_SECRET` | `--client-secret` |
+| `TALOSCTL_OIDC_ENDPOINTS` | `--endpoints` (comma-separated) |
+| `TALOSCTL_OIDC_ROLES` | `--roles` (comma-separated) |
+
+### 4. Manage the extension service
+
+```bash
+# Check service status
+talosctl service ext-talosctl-oidc
+
+# View logs
+talosctl logs ext-talosctl-oidc
+
+# Restart the service
+talosctl service ext-talosctl-oidc restart
 ```
 
 ## Token Caching Behavior
 
-The `login` command handles tokens intelligently:
+OIDC tokens are cached in the **system keychain** (macOS Keychain, GNOME Keyring, KDE Wallet, or Windows Credential Manager).
 
 | Scenario | Behavior |
 |----------|----------|
 | No cached token | Opens browser for full OIDC login |
-| Valid cached token | Skips browser, writes certs immediately |
+| Valid cached token | Skips browser, exchanges cached token for new cert |
 | Expired token with refresh token | Silently refreshes, no browser needed |
 | Expired token without refresh token | Opens browser for full OIDC login |
 | Refresh fails | Falls back to full OIDC login |
@@ -280,21 +371,15 @@ Use `--context-name` to manage credentials for different Talos clusters:
 talosctl-oidc login \
   --provider https://idp.example.com/realms/talos \
   --client-id talosctl \
-  --context-name prod \
-  --ca-cert ~/.talos/certs/prod-ca.crt \
-  --client-cert ~/.talos/certs/prod-admin.crt \
-  --client-key ~/.talos/certs/prod-admin.key \
-  --endpoints 10.0.0.1
+  --server https://prod-oidc-server:8443 \
+  --context-name prod
 
 # Login to staging cluster
 talosctl-oidc login \
   --provider https://idp.example.com/realms/talos \
   --client-id talosctl \
-  --context-name staging \
-  --ca-cert ~/.talos/certs/staging-ca.crt \
-  --client-cert ~/.talos/certs/staging-admin.crt \
-  --client-key ~/.talos/certs/staging-admin.key \
-  --endpoints 10.1.0.1
+  --server https://staging-oidc-server:8443 \
+  --context-name staging
 
 # Switch between clusters
 talosctl --context prod version
@@ -307,14 +392,21 @@ talosctl-oidc status --context-name staging
 
 ## Security Considerations
 
-- **PKCE is mandatory** for the OIDC flow (S256 challenge method), protecting against authorization code interception attacks
+- **Ephemeral certificates**: Client certificates are short-lived (default 1 hour). Users cannot extend or forge certificates without re-authenticating
+- **CA key isolation**: The Talos CA private key is held only by the server, never exposed to clients
+- **PKCE is mandatory**: The OIDC flow uses S256 challenge method, protecting against authorization code interception
 - **OIDC tokens are stored in the system keychain**, encrypted at rest by the operating system
-- **Client certificates are embedded in `~/.talos/config`** with `0600` permissions (same as standard talosctl behavior)
-- **The callback server binds to `127.0.0.1` only**, preventing access from other machines on the network
+- **Token validation**: The server validates ID tokens against the OIDC provider's JWKS (RS256, ES256, EdDSA) or HMAC secret (HS256)
+- **The callback server binds to `127.0.0.1` only**, preventing access from other machines
 - **State parameter** is used for CSRF protection during the OIDC flow
-- Running `logout` removes both the keychain token and the certificates from the talosconfig
 
 ## Troubleshooting
+
+### "invalid_client" error during login
+
+The OIDC provider is rejecting the token request. Common causes:
+- The provider is configured as a **confidential client** but no `--client-secret` was provided. Either switch to a public client or pass `--client-secret`
+- The **Client ID** is incorrect
 
 ### "failed to listen on port 8900"
 
@@ -323,23 +415,26 @@ Another process is using port 8900. Use `--callback-port` to pick a different po
 ### "OIDC discovery failed"
 
 The tool could not reach the OIDC provider's `/.well-known/openid-configuration` endpoint. Verify:
-- The `--provider` URL is correct and reachable
-- The URL does not have a trailing slash issue
+- The `--provider` / `--issuer-url` is correct and reachable
 - Your network/proxy allows access to the provider
 
 ### "state mismatch: possible CSRF attack"
 
-The state parameter returned by the OIDC provider does not match what was sent. This could indicate a CSRF attack or a stale browser tab. Try the login again.
+The state parameter returned by the OIDC provider does not match what was sent. This could indicate a stale browser tab. Try the login again.
+
+### Server: "loading CA" error
+
+The CA certificate and key files could not be loaded. Verify:
+- The files are valid PEM-encoded Ed25519 certificates/keys
+- You are using the **Talos API CA** (from `machine.ca` in `controlplane.yaml`), not the OS-level CA from `secrets.yaml`
+- The cert and key match (same public key)
 
 ### Keychain errors on Linux
 
-On Linux, `go-keyring` requires a running secret service (GNOME Keyring or KDE Wallet). If you are on a headless server, you may need to install and configure `gnome-keyring` or use `--context-name` with a specific name to help identify entries.
+On Linux, `go-keyring` requires a running secret service (GNOME Keyring or KDE Wallet). On headless servers:
 
 ```bash
-# Install GNOME Keyring on Debian/Ubuntu
 sudo apt install gnome-keyring
-
-# On headless systems, you may need to unlock the keyring first
 eval $(gnome-keyring-daemon --start --components=secrets)
 export GNOME_KEYRING_CONTROL
 ```

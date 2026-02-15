@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -52,16 +53,24 @@ func init() {
 	serveCmd.Flags().StringSliceVar(&serveFlags.endpoints, "endpoints", nil, "Talos node endpoints to include in responses (required)")
 	serveCmd.Flags().StringSliceVar(&serveFlags.roles, "roles", []string{"os:admin"}, "Talos roles to assign to issued certificates")
 
-	serveCmd.MarkFlagRequired("ca-cert")
-	serveCmd.MarkFlagRequired("ca-key")
-	serveCmd.MarkFlagRequired("issuer-url")
-	serveCmd.MarkFlagRequired("client-id")
-	serveCmd.MarkFlagRequired("endpoints")
-
 	rootCmd.AddCommand(serveCmd)
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
+	// Resolve flags from environment variables when not set via CLI.
+	resolveServeEnv(cmd)
+
+	// Validate required flags (they may have been set via env vars after flag parsing).
+	for _, name := range []string{"ca-cert", "ca-key", "issuer-url", "client-id", "endpoints"} {
+		f := cmd.Flags().Lookup(name)
+		if f == nil {
+			continue
+		}
+		if f.Value.String() == "" || f.Value.String() == "[]" {
+			return fmt.Errorf("required flag %q not set (set via --%s or env var)", name, name)
+		}
+	}
+
 	// Load the Talos CA.
 	ca, err := certsign.LoadCA(serveFlags.caCert, serveFlags.caKey)
 	if err != nil {
@@ -104,5 +113,58 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return nil
 	case err := <-errCh:
 		return fmt.Errorf("server error: %w", err)
+	}
+}
+
+// resolveServeEnv sets serve flags from environment variables when the flag
+// was not explicitly provided on the command line. This allows the extension
+// to be configured via ExtensionServiceConfig environment variables.
+//
+// Environment variables:
+//
+//	TALOSCTL_OIDC_CA_CERT      -> --ca-cert
+//	TALOSCTL_OIDC_CA_KEY       -> --ca-key
+//	TALOSCTL_OIDC_LISTEN       -> --listen
+//	TALOSCTL_OIDC_CERT_TTL     -> --cert-ttl
+//	TALOSCTL_OIDC_ISSUER_URL   -> --issuer-url
+//	TALOSCTL_OIDC_CLIENT_ID    -> --client-id
+//	TALOSCTL_OIDC_CLIENT_SECRET -> --client-secret
+//	TALOSCTL_OIDC_ENDPOINTS    -> --endpoints (comma-separated)
+//	TALOSCTL_OIDC_ROLES        -> --roles (comma-separated)
+func resolveServeEnv(cmd *cobra.Command) {
+	envMap := map[string]string{
+		"ca-cert":       "TALOSCTL_OIDC_CA_CERT",
+		"ca-key":        "TALOSCTL_OIDC_CA_KEY",
+		"listen":        "TALOSCTL_OIDC_LISTEN",
+		"issuer-url":    "TALOSCTL_OIDC_ISSUER_URL",
+		"client-id":     "TALOSCTL_OIDC_CLIENT_ID",
+		"client-secret": "TALOSCTL_OIDC_CLIENT_SECRET",
+	}
+
+	for flagName, envName := range envMap {
+		if !cmd.Flags().Changed(flagName) {
+			if v := os.Getenv(envName); v != "" {
+				cmd.Flags().Set(flagName, v)
+			}
+		}
+	}
+
+	// Duration flag.
+	if !cmd.Flags().Changed("cert-ttl") {
+		if v := os.Getenv("TALOSCTL_OIDC_CERT_TTL"); v != "" {
+			cmd.Flags().Set("cert-ttl", v)
+		}
+	}
+
+	// Slice flags (comma-separated env values).
+	if !cmd.Flags().Changed("endpoints") {
+		if v := os.Getenv("TALOSCTL_OIDC_ENDPOINTS"); v != "" {
+			serveFlags.endpoints = strings.Split(v, ",")
+		}
+	}
+	if !cmd.Flags().Changed("roles") {
+		if v := os.Getenv("TALOSCTL_OIDC_ROLES"); v != "" {
+			serveFlags.roles = strings.Split(v, ",")
+		}
 	}
 }
