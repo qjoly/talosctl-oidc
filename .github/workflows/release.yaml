@@ -137,17 +137,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Install crane
-        run: |
-          CRANE_VERSION=$(curl -fsSL https://api.github.com/repos/google/go-containerregistry/releases/latest | jq -r '.tag_name') || { echo "Failed to fetch crane version"; exit 1; }
-          CRANE_ARCH=$(uname -m)
-          case "$CRANE_ARCH" in
-            x86_64) CRANE_ARCH="amd64" ;;
-            aarch64) CRANE_ARCH="arm64" ;;
-          esac
-          wget -qO crane "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/crane-linux-${CRANE_ARCH}" || { echo "Failed to download crane"; exit 1; }
-          chmod +x crane
-          sudo mv crane /usr/local/bin/crane
+      - name: Setup crane
+        uses: imjasonh/setup-crane@v0.5
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
