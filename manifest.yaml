@@ -1,7 +1,7 @@
 version: v1alpha1
 metadata:
   name: talosctl-oidc
-  version: 0.1.0
+  version: APP_VERSION # This will be replaced with the actual version during the build process
   author: Quentin JOLY
   description: |
     OIDC certificate exchange server for Talos Linux.
