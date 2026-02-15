@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -153,7 +154,8 @@ func ExchangeCode(ctx context.Context, provider *ProviderConfig, clientID, clien
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token endpoint returned status %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("token endpoint returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var tokenResp TokenResponse
@@ -189,7 +191,8 @@ func RefreshAccessToken(ctx context.Context, provider *ProviderConfig, clientID,
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh returned status %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("token refresh returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var tokenResp TokenResponse

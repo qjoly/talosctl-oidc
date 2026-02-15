@@ -1,6 +1,7 @@
 package talosconfig
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -81,27 +82,83 @@ func Save(path string, config *Config) error {
 // and sets it as the current context.
 func SetContext(config *Config, name string, endpoints []string, caCertPath, clientCertPath, clientKeyPath string) error {
 	// Read certificate files.
-	caCert, err := os.ReadFile(caCertPath)
+	caCert, err := readAndEncode(caCertPath, "CA certificate")
 	if err != nil {
-		return fmt.Errorf("reading CA certificate: %w", err)
+		return err
 	}
 
-	clientCert, err := os.ReadFile(clientCertPath)
+	clientCert, err := readAndEncode(clientCertPath, "client certificate")
 	if err != nil {
-		return fmt.Errorf("reading client certificate: %w", err)
+		return err
 	}
 
-	clientKey, err := os.ReadFile(clientKeyPath)
+	clientKey, err := readAndEncode(clientKeyPath, "client key")
 	if err != nil {
-		return fmt.Errorf("reading client key: %w", err)
+		return err
 	}
 
-	// Encode to base64 (talosconfig stores certs as base64).
 	ctx := &Context{
 		Endpoints: endpoints,
-		CA:        base64.StdEncoding.EncodeToString(caCert),
-		Crt:       base64.StdEncoding.EncodeToString(clientCert),
-		Key:       base64.StdEncoding.EncodeToString(clientKey),
+		CA:        caCert,
+		Crt:       clientCert,
+		Key:       clientKey,
+	}
+
+	config.Contexts[name] = ctx
+	config.Context = name
+
+	return nil
+}
+
+// readAndEncode reads a file and returns its content as base64.
+// It handles three formats:
+//   - PEM (-----BEGIN ...) → base64-encode as-is
+//   - Already base64-encoded PEM → use as-is (decoded content starts with -----BEGIN)
+//   - Other → error
+func readAndEncode(path string, label string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading %s: %w", label, err)
+	}
+
+	content := bytes.TrimSpace(data)
+	if len(content) == 0 {
+		return "", fmt.Errorf("%s file is empty: %s", label, path)
+	}
+
+	// Case 1: File contains PEM directly.
+	if bytes.HasPrefix(content, []byte("-----BEGIN ")) {
+		return base64.StdEncoding.EncodeToString(content), nil
+	}
+
+	// Case 2: File contains base64-encoded PEM (e.g. extracted from a talosconfig).
+	decoded, err := base64.StdEncoding.DecodeString(string(content))
+	if err == nil && bytes.HasPrefix(bytes.TrimSpace(decoded), []byte("-----BEGIN ")) {
+		// Already valid base64-encoded PEM, use as-is.
+		return string(content), nil
+	}
+
+	return "", fmt.Errorf("%s file is not a valid PEM or base64-encoded PEM: %s (file is %d bytes)", label, path, len(content))
+}
+
+// SetContextFromPEM adds or updates a context using raw PEM bytes (not file paths).
+// This is used when receiving certificates from the cert exchange server.
+func SetContextFromPEM(config *Config, name string, endpoints []string, caPEM, certPEM, keyPEM []byte) error {
+	if len(caPEM) == 0 {
+		return fmt.Errorf("CA certificate PEM is empty")
+	}
+	if len(certPEM) == 0 {
+		return fmt.Errorf("client certificate PEM is empty")
+	}
+	if len(keyPEM) == 0 {
+		return fmt.Errorf("client key PEM is empty")
+	}
+
+	ctx := &Context{
+		Endpoints: endpoints,
+		CA:        base64.StdEncoding.EncodeToString(bytes.TrimSpace(caPEM)),
+		Crt:       base64.StdEncoding.EncodeToString(bytes.TrimSpace(certPEM)),
+		Key:       base64.StdEncoding.EncodeToString(bytes.TrimSpace(keyPEM)),
 	}
 
 	config.Contexts[name] = ctx

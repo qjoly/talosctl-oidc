@@ -1,1 +1,6 @@
 ./talos
+talosctl-oidc
+./temp
+talos-admin.key
+talos-admin.crt
+talos-ca.crt

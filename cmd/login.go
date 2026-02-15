@@ -1,17 +1,21 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os/exec"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/qjoly/talosctl-oidc/pkg/keychain"
 	"github.com/qjoly/talosctl-oidc/pkg/oidc"
+	"github.com/qjoly/talosctl-oidc/pkg/server"
 	"github.com/qjoly/talosctl-oidc/pkg/talosconfig"
 )
 
@@ -21,20 +25,20 @@ var loginFlags struct {
 	clientSecret string
 	scopes       []string
 	callbackPort int
-	caCert       string
-	clientCert   string
-	clientKey    string
-	endpoints    []string
+	serverURL    string
 	contextName  string
 	talosconfig  string
 }
 
 var loginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "Authenticate via OIDC and write credentials to talosconfig",
+	Short: "Authenticate via OIDC and obtain ephemeral Talos credentials",
 	Long: `Authenticate via an OIDC provider using the Authorization Code flow with PKCE.
-Upon successful authentication, pre-provisioned Talos admin client certificates
-are written to the talosconfig file.`,
+Upon successful authentication, the ID token is exchanged with the cert exchange
+server for an ephemeral short-lived Talos client certificate, which is written
+to the talosconfig file.
+
+When the certificate expires, you must re-authenticate via OIDC.`,
 	RunE: runLogin,
 }
 
@@ -44,19 +48,13 @@ func init() {
 	loginCmd.Flags().StringVar(&loginFlags.clientSecret, "client-secret", "", "OIDC client secret (optional, for confidential clients)")
 	loginCmd.Flags().StringSliceVar(&loginFlags.scopes, "scopes", []string{"openid", "profile", "email"}, "OIDC scopes")
 	loginCmd.Flags().IntVar(&loginFlags.callbackPort, "callback-port", 8900, "Local callback server port")
-	loginCmd.Flags().StringVar(&loginFlags.caCert, "ca-cert", "", "Path to Talos CA certificate (required)")
-	loginCmd.Flags().StringVar(&loginFlags.clientCert, "client-cert", "", "Path to pre-provisioned client certificate (required)")
-	loginCmd.Flags().StringVar(&loginFlags.clientKey, "client-key", "", "Path to pre-provisioned client key (required)")
-	loginCmd.Flags().StringSliceVar(&loginFlags.endpoints, "endpoints", nil, "Talos node endpoints (required)")
+	loginCmd.Flags().StringVar(&loginFlags.serverURL, "server", "", "Cert exchange server URL (required, e.g. http://localhost:8443)")
 	loginCmd.Flags().StringVar(&loginFlags.contextName, "context-name", "oidc", "Name for the talosconfig context")
 	loginCmd.Flags().StringVar(&loginFlags.talosconfig, "talosconfig", "", "Path to talosconfig file (default: ~/.talos/config)")
 
 	loginCmd.MarkFlagRequired("provider")
 	loginCmd.MarkFlagRequired("client-id")
-	loginCmd.MarkFlagRequired("ca-cert")
-	loginCmd.MarkFlagRequired("client-cert")
-	loginCmd.MarkFlagRequired("client-key")
-	loginCmd.MarkFlagRequired("endpoints")
+	loginCmd.MarkFlagRequired("server")
 
 	rootCmd.AddCommand(loginCmd)
 }
@@ -70,18 +68,66 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		talosconfigPath = talosconfig.DefaultPath()
 	}
 
+	// Step 1: Authenticate via OIDC to get an ID token.
+	idToken, err := obtainIDToken(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Step 2: Exchange the ID token with the cert exchange server for ephemeral certs.
+	fmt.Printf("Exchanging token with cert server at %s...\n", loginFlags.serverURL)
+
+	certResp, err := exchangeTokenForCert(ctx, loginFlags.serverURL, idToken)
+	if err != nil {
+		return fmt.Errorf("cert exchange failed: %w", err)
+	}
+
+	fmt.Printf("Received ephemeral certificate (TTL: %ds)\n", certResp.TTL)
+
+	// Step 3: Write the ephemeral certs to talosconfig.
+	cfg, err := talosconfig.Load(talosconfigPath)
+	if err != nil {
+		return fmt.Errorf("loading talosconfig: %w", err)
+	}
+
+	if err := talosconfig.SetContextFromPEM(
+		cfg,
+		loginFlags.contextName,
+		certResp.Endpoints,
+		[]byte(certResp.CA),
+		[]byte(certResp.Cert),
+		[]byte(certResp.Key),
+	); err != nil {
+		return fmt.Errorf("setting talosconfig context: %w", err)
+	}
+
+	if err := talosconfig.Save(talosconfigPath, cfg); err != nil {
+		return fmt.Errorf("saving talosconfig: %w", err)
+	}
+
+	fmt.Printf("Talosconfig updated: context %q set with endpoints %v\n", loginFlags.contextName, certResp.Endpoints)
+	fmt.Printf("Config written to: %s\n", talosconfigPath)
+	fmt.Printf("Certificate expires in %s\n", time.Duration(certResp.TTL)*time.Second)
+
+	return nil
+}
+
+// obtainIDToken performs the OIDC flow (or uses cached token) and returns the ID token string.
+func obtainIDToken(ctx context.Context) (string, error) {
 	// Check for cached token in keychain.
 	storedToken, err := keychain.Retrieve(loginFlags.contextName)
 	if err != nil {
 		fmt.Printf("Warning: could not check keychain: %v\n", err)
 	}
 
-	needsAuth := true
-
-	if storedToken != nil && !storedToken.IsExpired() {
+	// If we have a valid cached token with an ID token, use it.
+	if storedToken != nil && !storedToken.IsExpired() && storedToken.IDToken != "" {
 		fmt.Println("Using cached OIDC token (still valid).")
-		needsAuth = false
-	} else if storedToken != nil && storedToken.HasRefreshToken() {
+		return storedToken.IDToken, nil
+	}
+
+	// Try to refresh if we have a refresh token.
+	if storedToken != nil && storedToken.HasRefreshToken() {
 		fmt.Println("Token expired, attempting refresh...")
 
 		provider, err := oidc.Discover(ctx, storedToken.Issuer)
@@ -92,7 +138,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				fmt.Printf("Token refresh failed: %v\nFalling back to full authentication.\n", err)
 			} else {
-				storedToken = &oidc.StoredToken{
+				refreshedToken := &oidc.StoredToken{
 					AccessToken:  tokenResp.AccessToken,
 					RefreshToken: tokenResp.RefreshToken,
 					IDToken:      tokenResp.IDToken,
@@ -100,62 +146,96 @@ func runLogin(cmd *cobra.Command, args []string) error {
 					Issuer:       storedToken.Issuer,
 					ClientID:     storedToken.ClientID,
 				}
-				// Keep existing refresh token if the provider didn't rotate it.
-				if storedToken.RefreshToken == "" {
-					storedToken.RefreshToken = tokenResp.RefreshToken
+				if refreshedToken.RefreshToken == "" {
+					refreshedToken.RefreshToken = storedToken.RefreshToken
 				}
 
-				if err := keychain.Store(loginFlags.contextName, storedToken); err != nil {
+				if err := keychain.Store(loginFlags.contextName, refreshedToken); err != nil {
 					fmt.Printf("Warning: could not cache refreshed token: %v\n", err)
 				}
 				fmt.Println("Token refreshed successfully.")
-				needsAuth = false
+
+				if refreshedToken.IDToken != "" {
+					return refreshedToken.IDToken, nil
+				}
+				// If refresh didn't return an ID token, fall through to full auth.
+				fmt.Println("Refreshed token has no ID token, performing full authentication...")
 			}
 		}
 	}
 
-	if needsAuth {
-		fmt.Printf("Authenticating with OIDC provider: %s\n", loginFlags.provider)
+	// Full authentication flow.
+	fmt.Printf("Authenticating with OIDC provider: %s\n", loginFlags.provider)
 
-		authCfg := oidc.AuthConfig{
-			IssuerURL:    loginFlags.provider,
-			ClientID:     loginFlags.clientID,
-			ClientSecret: loginFlags.clientSecret,
-			Scopes:       loginFlags.scopes,
-			CallbackPort: loginFlags.callbackPort,
-			OpenBrowser:  openBrowser,
-		}
-
-		storedToken, err = oidc.Authenticate(ctx, authCfg)
-		if err != nil {
-			return fmt.Errorf("authentication failed: %w", err)
-		}
-
-		if err := keychain.Store(loginFlags.contextName, storedToken); err != nil {
-			fmt.Printf("Warning: could not cache token in keychain: %v\n", err)
-		}
-
-		fmt.Println("Authentication successful.")
+	authCfg := oidc.AuthConfig{
+		IssuerURL:    loginFlags.provider,
+		ClientID:     loginFlags.clientID,
+		ClientSecret: loginFlags.clientSecret,
+		Scopes:       loginFlags.scopes,
+		CallbackPort: loginFlags.callbackPort,
+		OpenBrowser:  openBrowser,
 	}
 
-	// Write certs to talosconfig.
-	cfg, err := talosconfig.Load(talosconfigPath)
+	storedToken, err = oidc.Authenticate(ctx, authCfg)
 	if err != nil {
-		return fmt.Errorf("loading talosconfig: %w", err)
+		return "", fmt.Errorf("authentication failed: %w", err)
 	}
 
-	if err := talosconfig.SetContext(cfg, loginFlags.contextName, loginFlags.endpoints, loginFlags.caCert, loginFlags.clientCert, loginFlags.clientKey); err != nil {
-		return fmt.Errorf("setting talosconfig context: %w", err)
+	if err := keychain.Store(loginFlags.contextName, storedToken); err != nil {
+		fmt.Printf("Warning: could not cache token in keychain: %v\n", err)
 	}
 
-	if err := talosconfig.Save(talosconfigPath, cfg); err != nil {
-		return fmt.Errorf("saving talosconfig: %w", err)
+	fmt.Println("Authentication successful.")
+
+	if storedToken.IDToken == "" {
+		return "", fmt.Errorf("OIDC provider did not return an ID token; ensure 'openid' scope is requested")
 	}
 
-	fmt.Printf("Talosconfig updated: context %q set with endpoints %s\n", loginFlags.contextName, strings.Join(loginFlags.endpoints, ", "))
-	fmt.Printf("Config written to: %s\n", talosconfigPath)
+	return storedToken.IDToken, nil
+}
 
-	return nil
+// exchangeTokenForCert sends the ID token to the cert exchange server and returns the certificate response.
+func exchangeTokenForCert(ctx context.Context, serverURL, idToken string) (*server.CertResponse, error) {
+	exchangeURL := serverURL + "/exchange"
+
+	reqBody, err := json.Marshal(map[string]string{
+		"id_token": idToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling exchange request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, exchangeURL, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("creating exchange request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("contacting cert exchange server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading exchange response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var errResp server.ErrorResponse
+		if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, errResp.Error)
+		}
+		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var certResp server.CertResponse
+	if err := json.Unmarshal(body, &certResp); err != nil {
+		return nil, fmt.Errorf("decoding exchange response: %w", err)
+	}
+
+	return &certResp, nil
 }
 
 func openBrowser(url string) error {
