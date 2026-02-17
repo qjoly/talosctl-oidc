@@ -26,3 +26,26 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Update manifest version
+        run: |
+          sed -i "s/APP_VERSION/dev/g" manifest.yaml
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build extension image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: extension
+          push: false
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
