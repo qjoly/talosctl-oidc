@@ -12,6 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/qjoly/talosctl-oidc/pkg/admin"
+	"github.com/qjoly/talosctl-oidc/pkg/audit"
 	"github.com/qjoly/talosctl-oidc/pkg/certsign"
 	"github.com/qjoly/talosctl-oidc/pkg/server"
 )
@@ -40,6 +42,11 @@ TLS configuration:
   TALOSCTL_OIDC_TLS_KEY        Path to TLS private key file
   TALOSCTL_OIDC_INSECURE       Set to "true" to serve plain HTTP (no TLS)
   TALOSCTL_OIDC_DATA_DIR       Directory to persist the self-signed TLS certificate
+
+Audit & admin:
+
+  TALOSCTL_OIDC_AUDIT_LOG      Path to audit log file (default: stdout, "-" for stdout)
+  TALOSCTL_OIDC_ADMIN_TOKEN    Bearer token for /admin/* endpoints (required to enable admin API)
 
 By default (no TLS env vars set), the server generates a self-signed TLS
 certificate at startup and logs the CA PEM so clients can trust it via
@@ -76,6 +83,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 	tlsKey := os.Getenv("TALOSCTL_OIDC_TLS_KEY")
 	insecureRaw := os.Getenv("TALOSCTL_OIDC_INSECURE")
 	dataDir := os.Getenv("TALOSCTL_OIDC_DATA_DIR")
+
+	// Audit & admin env vars.
+	auditLogPath := os.Getenv("TALOSCTL_OIDC_AUDIT_LOG")
+	adminToken := os.Getenv("TALOSCTL_OIDC_ADMIN_TOKEN")
 
 	// Validate required env vars.
 	var missing []string
@@ -137,6 +148,28 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	log.Printf("Loaded Talos CA from %s", caCert)
 
+	// Initialize the audit logger.
+	auditLogger, err := audit.NewLogger(auditLogPath)
+	if err != nil {
+		return fmt.Errorf("initializing audit logger: %w", err)
+	}
+	defer auditLogger.Close()
+
+	if auditLogPath != "" && auditLogPath != "-" {
+		log.Printf("Audit log: %s", auditLogPath)
+	} else {
+		log.Printf("Audit log: stdout")
+	}
+
+	// Initialize admin tracker (subscribes to audit events).
+	tracker := admin.NewTracker(auditLogger)
+
+	if adminToken != "" {
+		log.Printf("Admin API: enabled (protected by bearer token)")
+	} else {
+		log.Printf("Admin API: disabled (set TALOSCTL_OIDC_ADMIN_TOKEN to enable)")
+	}
+
 	cfg := server.Config{
 		ListenAddr:   listen,
 		CA:           ca,
@@ -150,6 +183,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		TLSKeyFile:   tlsKey,
 		Insecure:     insecure,
 		DataDir:      dataDir,
+		AuditLogger:  auditLogger,
+		AdminToken:   adminToken,
+		AdminTracker: tracker,
 	}
 
 	srv := server.New(cfg)

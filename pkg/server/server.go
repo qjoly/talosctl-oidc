@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -19,8 +20,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/qjoly/talosctl-oidc/pkg/admin"
+	"github.com/qjoly/talosctl-oidc/pkg/audit"
 	"github.com/qjoly/talosctl-oidc/pkg/certsign"
 	"github.com/qjoly/talosctl-oidc/pkg/oidc"
 )
@@ -68,6 +72,18 @@ type Config struct {
 	// reloaded on subsequent starts. When empty, certificates are generated in
 	// memory and lost on restart.
 	DataDir string
+
+	// AuditLogger is an optional structured audit logger. When non-nil, the
+	// server emits audit events for every authentication attempt and certificate
+	// issuance.
+	AuditLogger *audit.Logger
+
+	// AdminToken, when set, protects the /admin/* endpoints with a bearer token.
+	AdminToken string
+
+	// AdminTracker is the in-memory tracker for issued certs and stats.
+	// When non-nil, the /admin/certs and /admin/stats endpoints are enabled.
+	AdminTracker *admin.Tracker
 }
 
 // CertResponse is the JSON response returned to clients after successful token exchange.
@@ -102,6 +118,12 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("/exchange", s.handleExchange)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/ca", s.handleCA)
+
+	// Admin endpoints (only registered when a tracker is configured).
+	if cfg.AdminTracker != nil {
+		mux.HandleFunc("/admin/stats", s.requireAdminToken(s.handleAdminStats))
+		mux.HandleFunc("/admin/certs", s.requireAdminToken(s.handleAdminCerts))
+	}
 
 	s.httpServer = &http.Server{
 		Addr:         cfg.ListenAddr,
@@ -412,6 +434,8 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientIP := r.RemoteAddr
+
 	// Parse request body.
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
 	if err != nil {
@@ -433,19 +457,43 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate the OIDC token.
-	if err := s.validateToken(r.Context(), req.IDToken); err != nil {
+	tc, err := s.validateToken(r.Context(), req.IDToken)
+	if err != nil {
 		log.Printf("Token validation failed: %v", err)
+		s.auditLog(audit.Event{
+			Type:     audit.EventAuthFailure,
+			ClientIP: clientIP,
+			Error:    err.Error(),
+		})
 		writeError(w, http.StatusUnauthorized, "invalid token: "+err.Error())
 		return
 	}
+
+	// Auth succeeded.
+	s.auditLog(audit.Event{
+		Type:     audit.EventAuthSuccess,
+		Subject:  tc.Subject,
+		Email:    tc.Email,
+		Issuer:   tc.Issuer,
+		ClientIP: clientIP,
+	})
 
 	// Generate ephemeral client certificate.
 	clientCert, err := certsign.GenerateClientCert(s.cfg.CA, s.cfg.Roles, s.cfg.CertTTL)
 	if err != nil {
 		log.Printf("Certificate generation failed: %v", err)
+		s.auditLog(audit.Event{
+			Type:     audit.EventCertError,
+			Subject:  tc.Subject,
+			Email:    tc.Email,
+			ClientIP: clientIP,
+			Error:    err.Error(),
+		})
 		writeError(w, http.StatusInternalServerError, "failed to generate certificate")
 		return
 	}
+
+	certExpiry := time.Now().Add(s.cfg.CertTTL)
 
 	resp := CertResponse{
 		CA:        string(clientCert.CaPEM),
@@ -458,7 +506,25 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 
+	s.auditLog(audit.Event{
+		Type:       audit.EventCertIssued,
+		Subject:    tc.Subject,
+		Email:      tc.Email,
+		Issuer:     tc.Issuer,
+		ClientIP:   clientIP,
+		Roles:      s.cfg.Roles,
+		CertTTL:    s.cfg.CertTTL.String(),
+		CertExpiry: certExpiry,
+	})
+
 	log.Printf("Issued ephemeral certificate (TTL: %s)", s.cfg.CertTTL)
+}
+
+// tokenClaims holds extracted identity information from a validated token.
+type tokenClaims struct {
+	Subject string
+	Email   string
+	Issuer  string
 }
 
 // validateToken verifies the OIDC ID token against the provider.
@@ -467,40 +533,118 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 // - The issuer matches the configured issuer
 // - The audience contains the configured client ID
 // - The token is not expired
-func (s *Server) validateToken(ctx context.Context, idToken string) error {
+//
+// On success it returns the extracted identity claims.
+func (s *Server) validateToken(ctx context.Context, idToken string) (*tokenClaims, error) {
 	// Discover the OIDC provider to get the JWKS URI.
 	provider, err := oidc.Discover(ctx, s.cfg.IssuerURL)
 	if err != nil {
-		return fmt.Errorf("OIDC discovery failed: %w", err)
+		return nil, fmt.Errorf("OIDC discovery failed: %w", err)
 	}
 
 	// Fetch the JWKS.
 	jwks, err := oidc.FetchJWKS(ctx, provider.JWKSURI)
 	if err != nil {
-		return fmt.Errorf("fetching JWKS: %w", err)
+		return nil, fmt.Errorf("fetching JWKS: %w", err)
 	}
 
 	// Parse and validate the token.
 	claims, err := oidc.ValidateIDToken(idToken, jwks, s.cfg.IssuerURL, s.cfg.ClientID, s.cfg.ClientSecret)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	tc := &tokenClaims{}
+	if sub, ok := claims["sub"].(string); ok {
+		tc.Subject = sub
+	}
+	if email, ok := claims["email"].(string); ok {
+		tc.Email = email
+	}
+	if iss, ok := claims["iss"].(string); ok {
+		tc.Issuer = iss
 	}
 
 	// Log the authenticated user.
-	if sub, ok := claims["sub"].(string); ok {
-		email, _ := claims["email"].(string)
-		if email != "" {
-			log.Printf("Authenticated user: %s (%s)", sub, email)
-		} else {
-			log.Printf("Authenticated user: %s", sub)
-		}
+	if tc.Email != "" {
+		log.Printf("Authenticated user: %s (%s)", tc.Subject, tc.Email)
+	} else {
+		log.Printf("Authenticated user: %s", tc.Subject)
 	}
 
-	return nil
+	return tc, nil
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(ErrorResponse{Error: msg})
+}
+
+// auditLog emits an audit event if an audit logger is configured.
+func (s *Server) auditLog(event audit.Event) {
+	if s.cfg.AuditLogger != nil {
+		s.cfg.AuditLogger.Log(event)
+	}
+}
+
+// requireAdminToken wraps a handler with bearer token authentication.
+// If no AdminToken is configured, all requests are rejected with 403.
+func (s *Server) requireAdminToken(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.AdminToken == "" {
+			writeError(w, http.StatusForbidden, "admin API is disabled (no TALOSCTL_OIDC_ADMIN_TOKEN configured)")
+			return
+		}
+
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			writeError(w, http.StatusUnauthorized, "missing Authorization header")
+			return
+		}
+
+		const prefix = "Bearer "
+		if !strings.HasPrefix(auth, prefix) {
+			writeError(w, http.StatusUnauthorized, "invalid Authorization header (expected Bearer token)")
+			return
+		}
+
+		token := auth[len(prefix):]
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.AdminToken)) != 1 {
+			writeError(w, http.StatusForbidden, "invalid admin token")
+			return
+		}
+
+		next(w, r)
+	}
+}
+
+// handleAdminStats returns aggregate server statistics.
+//
+// GET /admin/stats
+// Response: {"started_at": "...", "uptime": "...", "total_certs_issued": N, ...}
+func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	stats := s.cfg.AdminTracker.GetStats()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+// handleAdminCerts returns the list of currently active (non-expired) issued certificates.
+//
+// GET /admin/certs
+// Response: [{"subject": "...", "email": "...", "issued_at": "...", ...}, ...]
+func (s *Server) handleAdminCerts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	certs := s.cfg.AdminTracker.ActiveCerts()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(certs)
 }
