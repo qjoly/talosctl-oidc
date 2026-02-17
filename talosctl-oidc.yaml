@@ -11,6 +11,13 @@ container:
       options:
         - rbind
         - ro
+    # Persistent volume for self-signed TLS certificates
+    - source: /var/lib/talosctl-oidc
+      destination: /var/lib/talosctl-oidc
+      type: bind
+      options:
+        - bind
+        - rw
 depends:
   - network:
       - addresses
