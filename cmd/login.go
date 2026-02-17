@@ -3,12 +3,16 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,6 +32,8 @@ var loginFlags struct {
 	serverURL    string
 	contextName  string
 	talosconfig  string
+	serverCA     string
+	insecure     bool
 }
 
 var loginCmd = &cobra.Command{
@@ -48,9 +54,11 @@ func init() {
 	loginCmd.Flags().StringVar(&loginFlags.clientSecret, "client-secret", "", "OIDC client secret (optional, for confidential clients)")
 	loginCmd.Flags().StringSliceVar(&loginFlags.scopes, "scopes", []string{"openid", "profile", "email"}, "OIDC scopes")
 	loginCmd.Flags().IntVar(&loginFlags.callbackPort, "callback-port", 8900, "Local callback server port")
-	loginCmd.Flags().StringVar(&loginFlags.serverURL, "server", "", "Cert exchange server URL (required, e.g. http://localhost:8443)")
+	loginCmd.Flags().StringVar(&loginFlags.serverURL, "server", "", "Cert exchange server URL (required, e.g. https://localhost:8443)")
 	loginCmd.Flags().StringVar(&loginFlags.contextName, "context-name", "oidc", "Name for the talosconfig context")
 	loginCmd.Flags().StringVar(&loginFlags.talosconfig, "talosconfig", "", "Path to talosconfig file (default: ~/.talos/config)")
+	loginCmd.Flags().StringVar(&loginFlags.serverCA, "server-ca", "", "Path to PEM CA certificate to trust for the cert exchange server (for self-signed TLS)")
+	loginCmd.Flags().BoolVar(&loginFlags.insecure, "insecure", false, "Allow plain HTTP connection to the cert exchange server (skip TLS verification)")
 
 	loginCmd.MarkFlagRequired("provider")
 	loginCmd.MarkFlagRequired("client-id")
@@ -68,6 +76,12 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		talosconfigPath = talosconfig.DefaultPath()
 	}
 
+	// Validate TLS configuration.
+	serverURL := loginFlags.serverURL
+	if strings.HasPrefix(serverURL, "http://") && !loginFlags.insecure {
+		return fmt.Errorf("plain HTTP server URL requires --insecure flag; use --insecure or switch to https://")
+	}
+
 	// Step 1: Authenticate via OIDC to get an ID token.
 	idToken, err := obtainIDToken(ctx)
 	if err != nil {
@@ -75,9 +89,14 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 2: Exchange the ID token with the cert exchange server for ephemeral certs.
-	fmt.Printf("Exchanging token with cert server at %s...\n", loginFlags.serverURL)
+	fmt.Printf("Exchanging token with cert server at %s...\n", serverURL)
 
-	certResp, err := exchangeTokenForCert(ctx, loginFlags.serverURL, idToken)
+	httpClient, err := buildHTTPClient()
+	if err != nil {
+		return fmt.Errorf("building HTTP client: %w", err)
+	}
+
+	certResp, err := exchangeTokenForCert(ctx, httpClient, serverURL, idToken)
 	if err != nil {
 		return fmt.Errorf("cert exchange failed: %w", err)
 	}
@@ -110,6 +129,50 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Certificate expires in %s\n", time.Duration(certResp.TTL)*time.Second)
 
 	return nil
+}
+
+// buildHTTPClient creates an HTTP client with the appropriate TLS configuration.
+//   - If --server-ca is set, the client trusts only that CA for the server connection.
+//   - If --insecure is set, TLS verification is disabled entirely.
+//   - Otherwise, the system certificate pool is used.
+func buildHTTPClient() (*http.Client, error) {
+	if loginFlags.insecure {
+		return &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true, //nolint:gosec // user explicitly opted in
+				},
+			},
+			Timeout: 30 * time.Second,
+		}, nil
+	}
+
+	if loginFlags.serverCA != "" {
+		caPEM, err := os.ReadFile(loginFlags.serverCA)
+		if err != nil {
+			return nil, fmt.Errorf("reading server CA file %s: %w", loginFlags.serverCA, err)
+		}
+
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("failed to parse CA certificate from %s", loginFlags.serverCA)
+		}
+
+		return &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					RootCAs:    pool,
+					MinVersion: tls.VersionTLS12,
+				},
+			},
+			Timeout: 30 * time.Second,
+		}, nil
+	}
+
+	// Default: use system certs.
+	return &http.Client{
+		Timeout: 30 * time.Second,
+	}, nil
 }
 
 // obtainIDToken performs the OIDC flow (or uses cached token) and returns the ID token string.
@@ -195,7 +258,7 @@ func obtainIDToken(ctx context.Context) (string, error) {
 }
 
 // exchangeTokenForCert sends the ID token to the cert exchange server and returns the certificate response.
-func exchangeTokenForCert(ctx context.Context, serverURL, idToken string) (*server.CertResponse, error) {
+func exchangeTokenForCert(ctx context.Context, client *http.Client, serverURL, idToken string) (*server.CertResponse, error) {
 	exchangeURL := serverURL + "/exchange"
 
 	reqBody, err := json.Marshal(map[string]string{
@@ -211,7 +274,7 @@ func exchangeTokenForCert(ctx context.Context, serverURL, idToken string) (*serv
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("contacting cert exchange server: %w", err)
 	}

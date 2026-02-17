@@ -3,12 +3,6 @@ container:
   entrypoint: ./talosctl-oidc
   args:
     - serve
-    - --ca-cert
-    - /config/ca.crt
-    - --ca-key
-    - /config/ca.key
-    - --listen
-    - :8443
   mounts:
     # TLS root certificates for OIDC provider HTTPS validation
     - source: /etc/ssl/certs
@@ -17,6 +11,13 @@ container:
       options:
         - rbind
         - ro
+    # Persistent volume for self-signed TLS certificates
+    - source: /var/lib/talosctl-oidc
+      destination: /data
+      type: bind
+      options:
+        - rbind
+        - rw
 depends:
   - network:
       - addresses
