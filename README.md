@@ -422,12 +422,11 @@ environment:
   - TALOSCTL_OIDC_ENDPOINTS=10.0.0.1,10.0.0.2
   - TALOSCTL_OIDC_CERT_TTL=1h
   - TALOSCTL_OIDC_ROLES=os:admin
-  - TALOSCTL_OIDC_DATA_DIR=/data
 ```
 
-The extension service config mounts `/var/lib/talosctl-oidc` on the host to `/data` inside the container (defined in `talosctl-oidc.yaml`). This persists the self-signed TLS certificate across restarts so the CA PEM stays stable.
+By default, the server generates a self-signed TLS certificate at startup. The CA PEM is served at the `/ca` endpoint. Since the extension container has a read-only rootfs and no persistent volume, the self-signed certificate is regenerated on each restart.
 
-The server will generate a self-signed TLS certificate on first start and save it to `/data`. On subsequent restarts, the same certificate is reloaded. To use your own TLS certs instead, mount them as config files and set `TALOSCTL_OIDC_TLS_CERT` and `TALOSCTL_OIDC_TLS_KEY`.
+To use your own TLS certificates, mount them as config files and set `TALOSCTL_OIDC_TLS_CERT` and `TALOSCTL_OIDC_TLS_KEY`.
 
 See the [Environment Variables](#environment-variables) table for all available settings.
 
