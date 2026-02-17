@@ -18,7 +18,7 @@ var logoutCmd = &cobra.Command{
 	Use:   "logout",
 	Short: "Remove OIDC credentials and clear cached tokens",
 	Long: `Remove the OIDC context from the talosconfig file and delete
-the cached OIDC tokens from the system keychain.`,
+the cached OIDC tokens from the system keychain (or file cache).`,
 	RunE: runLogout,
 }
 
@@ -35,11 +35,11 @@ func runLogout(cmd *cobra.Command, args []string) error {
 		talosconfigPath = talosconfig.DefaultPath()
 	}
 
-	// Delete token from keychain.
+	// Delete token from keychain and file cache.
 	if err := keychain.Delete(logoutFlags.contextName); err != nil {
-		fmt.Printf("Warning: could not clear keychain: %v\n", err)
+		fmt.Printf("Warning: could not clear cached token: %v\n", err)
 	} else {
-		fmt.Println("Keychain token cleared.")
+		fmt.Println("Cached token cleared.")
 	}
 
 	// Remove context from talosconfig.
