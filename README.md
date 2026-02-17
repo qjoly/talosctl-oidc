@@ -2,6 +2,8 @@
 
 OIDC certificate exchange server and client for [Talos Linux](https://www.talos.dev/). Enables OIDC-based access control for `talosctl` by issuing ephemeral short-lived client certificates signed by the Talos CA.
 
+![Cover](./cover.png)
+
 ## How It Works
 
 Talos Linux uses **mTLS (mutual TLS) with client certificates** for API authentication. There is no native OIDC support in the Talos API. This tool bridges the gap through a **certificate exchange server** model:
@@ -143,33 +145,65 @@ yq '.machine.ca.key' controlplane.yaml | base64 -d > talos-ca.key
 
 ### 3. Start the server
 
+The `serve` command is configured entirely via environment variables (no CLI flags):
+
 ```bash
-talosctl-oidc serve \
-  --ca-cert talos-ca.crt \
-  --ca-key talos-ca.key \
-  --issuer-url https://idp.example.com/application/o/talos-oidc/ \
-  --client-id <your-client-id> \
-  --endpoints 10.0.0.1,10.0.0.2 \
-  --listen :8443 \
-  --cert-ttl 1h \
-  --roles os:admin
+export TALOSCTL_OIDC_CA_CERT=talos-ca.crt
+export TALOSCTL_OIDC_CA_KEY=talos-ca.key
+export TALOSCTL_OIDC_ISSUER_URL=https://idp.example.com/application/o/talos-oidc/
+export TALOSCTL_OIDC_CLIENT_ID=<your-client-id>
+export TALOSCTL_OIDC_ENDPOINTS=10.0.0.1,10.0.0.2
+export TALOSCTL_OIDC_LISTEN=:8443
+export TALOSCTL_OIDC_CERT_TTL=1h
+export TALOSCTL_OIDC_ROLES=os:admin
+
+talosctl-oidc serve
+```
+
+By default, the server generates a **self-signed TLS certificate** at startup and logs the CA PEM. Save the CA PEM to a file and pass it to `login --server-ca` so the client trusts the server.
+
+To use your own TLS certificates:
+
+```bash
+export TALOSCTL_OIDC_TLS_CERT=/path/to/server.crt
+export TALOSCTL_OIDC_TLS_KEY=/path/to/server.key
+talosctl-oidc serve
+```
+
+To run without TLS (not recommended for production):
+
+```bash
+export TALOSCTL_OIDC_INSECURE=true
+talosctl-oidc serve
 ```
 
 ### 4. Login
 
 ```bash
+# With self-signed TLS (default server mode), save the CA PEM from server logs:
+talosctl-oidc login \
+  --provider https://idp.example.com/application/o/talos-oidc/ \
+  --client-id <your-client-id> \
+  --server https://localhost:8443 \
+  --server-ca server-ca.pem \
+  --context-name oidc \
+  --callback-port 8900
+
+# With insecure server:
 talosctl-oidc login \
   --provider https://idp.example.com/application/o/talos-oidc/ \
   --client-id <your-client-id> \
   --server http://localhost:8443 \
+  --insecure \
   --context-name oidc \
   --callback-port 8900
 ```
 
 This will:
+
 1. Open your browser to the OIDC provider login page
 2. Wait for you to authenticate
-3. Exchange the ID token with the cert server for an ephemeral certificate
+3. Exchange the ID token with the cert server for an ephemeral certificate (over TLS)
 4. Write the certificate to `~/.talos/config` under the `oidc` context
 
 ### 5. Use talosctl
@@ -186,23 +220,45 @@ talosctl --context oidc dashboard
 
 ### `serve`
 
-Start the certificate exchange server.
+Start the certificate exchange server. All configuration is via environment variables.
 
 ```bash
-talosctl-oidc serve [flags]
+talosctl-oidc serve
 ```
 
-| Flag | Required | Default | Description |
-|------|----------|---------|-------------|
-| `--ca-cert` | Yes | | Path to Talos CA certificate |
-| `--ca-key` | Yes | | Path to Talos CA private key |
-| `--issuer-url` | Yes | | OIDC issuer URL for token validation |
-| `--client-id` | Yes | | Expected OIDC client ID / audience |
-| `--endpoints` | Yes | | Talos node endpoints to return to clients |
-| `--client-secret` | No | | OIDC client secret (for HS256-signed tokens) |
-| `--listen` | No | `:8443` | Address to listen on |
-| `--cert-ttl` | No | `1h` | Lifetime of issued client certificates |
-| `--roles` | No | `os:admin` | Talos roles to assign to certificates |
+#### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `TALOSCTL_OIDC_CA_CERT` | Yes | | Path to Talos CA certificate |
+| `TALOSCTL_OIDC_CA_KEY` | Yes | | Path to Talos CA private key |
+| `TALOSCTL_OIDC_ISSUER_URL` | Yes | | OIDC issuer URL for token validation |
+| `TALOSCTL_OIDC_CLIENT_ID` | Yes | | Expected OIDC client ID / audience |
+| `TALOSCTL_OIDC_ENDPOINTS` | Yes | | Talos node endpoints (comma-separated) |
+| `TALOSCTL_OIDC_CLIENT_SECRET` | No | | OIDC client secret (for HS256-signed tokens) |
+| `TALOSCTL_OIDC_LISTEN` | No | `:8443` | Address to listen on |
+| `TALOSCTL_OIDC_CERT_TTL` | No | `1h` | Lifetime of issued client certificates |
+| `TALOSCTL_OIDC_ROLES` | No | `os:admin` | Talos roles (comma-separated) |
+| `TALOSCTL_OIDC_TLS_CERT` | No | | Path to TLS certificate (HTTPS with provided cert) |
+| `TALOSCTL_OIDC_TLS_KEY` | No | | Path to TLS private key (must be set with TLS_CERT) |
+| `TALOSCTL_OIDC_INSECURE` | No | `false` | Set to `true` to serve plain HTTP |
+| `TALOSCTL_OIDC_DATA_DIR` | No | | Directory to persist self-signed TLS certs across restarts |
+| `TALOSCTL_OIDC_AUDIT_LOG` | No | stdout | Path to audit log file (`-` for stdout) |
+| `TALOSCTL_OIDC_ADMIN_TOKEN` | No | | Bearer token to protect `/admin/*` endpoints (required to enable admin API) |
+
+#### TLS Modes
+
+| Mode | Configuration | Description |
+|------|--------------|-------------|
+| **Self-signed** (default) | No TLS env vars | Generates a self-signed cert at startup, logs the CA PEM |
+| **Self-signed + persisted** | `DATA_DIR=/data` | Same as above, but cert is saved to disk and reused on restart |
+| **Provided cert** | `TLS_CERT` + `TLS_KEY` | HTTPS with your own certificate |
+| **Insecure** | `INSECURE=true` | Plain HTTP (not recommended for production) |
+
+When `TALOSCTL_OIDC_DATA_DIR` is set, the self-signed CA and server certificate are
+saved to `<DATA_DIR>/ca.crt`, `ca.key`, `server.crt`, and `server.key`. On subsequent
+restarts, the same certificates are reloaded so the CA PEM stays stable and clients
+don't need to update their `--server-ca` file.
 
 #### API Endpoints
 
@@ -210,13 +266,18 @@ talosctl-oidc serve [flags]
 |----------|--------|-------------|
 | `/exchange` | POST | Exchange an OIDC ID token for an ephemeral certificate |
 | `/healthz` | GET | Health check (returns `200 OK`) |
+| `/ca` | GET | Returns the self-signed CA PEM (only in self-signed mode) |
+| `/admin/stats` | GET | Server statistics (requires `Authorization: Bearer <admin-token>`) |
+| `/admin/certs` | GET | List active (non-expired) issued certs (requires `Authorization: Bearer <admin-token>`) |
 
 **Exchange request:**
+
 ```json
 {"id_token": "eyJ..."}
 ```
 
 **Exchange response:**
+
 ```json
 {
   "ca": "-----BEGIN CERTIFICATE-----\n...",
@@ -239,12 +300,14 @@ talosctl-oidc login [flags]
 |------|----------|---------|-------------|
 | `--provider` | Yes | | OIDC issuer URL |
 | `--client-id` | Yes | | OIDC client ID |
-| `--server` | Yes | | Cert exchange server URL (e.g. `http://localhost:8443`) |
+| `--server` | Yes | | Cert exchange server URL (e.g. `https://localhost:8443`) |
 | `--client-secret` | No | | OIDC client secret (for confidential clients) |
 | `--scopes` | No | `openid,profile,email` | OIDC scopes |
 | `--callback-port` | No | `8900` | Local callback server port |
 | `--context-name` | No | `oidc` | Name for the talosconfig context |
 | `--talosconfig` | No | `~/.talos/config` | Path to talosconfig file |
+| `--server-ca` | No | | Path to PEM CA certificate to trust for the server (for self-signed TLS) |
+| `--insecure` | No | `false` | Allow plain HTTP connection to the server |
 
 ### `logout`
 
@@ -260,6 +323,7 @@ talosctl-oidc logout [flags]
 | `--talosconfig` | No | `~/.talos/config` | Path to talosconfig file |
 
 This removes:
+
 - The OIDC token from the system keychain
 - The context (including embedded certificates) from the talosconfig file
 
@@ -331,7 +395,7 @@ talosctl upgrade --image ghcr.io/qjoly/talos-oidc-installer:v1.9.5
 
 ### 4. Configure the extension service
 
-The extension reads its configuration from an `ExtensionServiceConfig` document in the Talos machine config. The CA certificate and key are provided as config files, and runtime flags are set via environment variables.
+The extension reads its configuration from an `ExtensionServiceConfig` document in the Talos machine config. The CA certificate and key are provided as config files, and all runtime settings are passed via environment variables.
 
 Add this to your machine config (or apply it via `talosctl apply-config`):
 
@@ -351,26 +415,23 @@ configFiles:
       -----END ED25519 PRIVATE KEY-----
     mountPath: /config/ca.key
 environment:
+  - TALOSCTL_OIDC_CA_CERT=/config/ca.crt
+  - TALOSCTL_OIDC_CA_KEY=/config/ca.key
   - TALOSCTL_OIDC_ISSUER_URL=https://idp.example.com/application/o/talos-oidc/
   - TALOSCTL_OIDC_CLIENT_ID=your-client-id
   - TALOSCTL_OIDC_ENDPOINTS=10.0.0.1,10.0.0.2
   - TALOSCTL_OIDC_CERT_TTL=1h
   - TALOSCTL_OIDC_ROLES=os:admin
+  - TALOSCTL_OIDC_DATA_DIR=/var/lib/talosctl-oidc
 ```
 
-All `serve` flags can be set via environment variables (prefix `TALOSCTL_OIDC_`). CLI flags take precedence when both are set.
+The extension service mounts `/var/lib/talosctl-oidc` from the host (Talos EPHEMERAL partition) into the container. This directory persists the self-signed TLS certificate across restarts so the CA PEM stays stable and clients don't need to update their `--server-ca` file.
 
-| Environment Variable | Flag |
-|---------------------|------|
-| `TALOSCTL_OIDC_CA_CERT` | `--ca-cert` |
-| `TALOSCTL_OIDC_CA_KEY` | `--ca-key` |
-| `TALOSCTL_OIDC_LISTEN` | `--listen` |
-| `TALOSCTL_OIDC_CERT_TTL` | `--cert-ttl` |
-| `TALOSCTL_OIDC_ISSUER_URL` | `--issuer-url` |
-| `TALOSCTL_OIDC_CLIENT_ID` | `--client-id` |
-| `TALOSCTL_OIDC_CLIENT_SECRET` | `--client-secret` |
-| `TALOSCTL_OIDC_ENDPOINTS` | `--endpoints` (comma-separated) |
-| `TALOSCTL_OIDC_ROLES` | `--roles` (comma-separated) |
+If the data directory is not writable (e.g. the mount is missing), the server falls back to in-memory certificate generation and logs a warning.
+
+To use your own TLS certificates instead, mount them as config files and set `TALOSCTL_OIDC_TLS_CERT` and `TALOSCTL_OIDC_TLS_KEY`.
+
+See the [Environment Variables](#environment-variables) table for all available settings.
 
 ### 5. Manage the extension service
 
@@ -411,6 +472,7 @@ talosctl-oidc login \
   --provider https://idp.example.com/realms/talos \
   --client-id talosctl \
   --server https://prod-oidc-server:8443 \
+  --server-ca prod-ca.pem \
   --context-name prod
 
 # Login to staging cluster
@@ -418,6 +480,7 @@ talosctl-oidc login \
   --provider https://idp.example.com/realms/talos \
   --client-id talosctl \
   --server https://staging-oidc-server:8443 \
+  --server-ca staging-ca.pem \
   --context-name staging
 
 # Switch between clusters
@@ -429,8 +492,114 @@ talosctl-oidc status --context-name prod
 talosctl-oidc status --context-name staging
 ```
 
+## Audit Logging
+
+The server emits structured JSON audit events for every authentication attempt and certificate issuance. Each event is a single JSON line written to the configured output.
+
+### Configuration
+
+By default, audit events are written to **stdout** (mixed with regular log output). To write to a dedicated file:
+
+```bash
+export TALOSCTL_OIDC_AUDIT_LOG=/var/log/talosctl-oidc/audit.log
+```
+
+### Event Types
+
+| Event | Description |
+|-------|-------------|
+| `auth_success` | OIDC token validated successfully |
+| `auth_failure` | Token validation failed (invalid signature, expired, wrong audience, etc.) |
+| `cert_issued` | Ephemeral client certificate issued to authenticated user |
+| `cert_error` | Certificate generation failed after successful authentication |
+
+### Example Events
+
+```json
+{"timestamp":"2026-02-17T14:30:00Z","type":"cert_issued","subject":"abc123","email":"user@example.com","issuer":"https://idp.example.com/","client_ip":"192.168.1.10:52431","roles":["os:admin"],"cert_ttl":"1h0m0s","cert_expiry":"2026-02-17T15:30:00Z"}
+{"timestamp":"2026-02-17T14:31:00Z","type":"auth_failure","client_ip":"10.0.0.5:48291","error":"token expired"}
+```
+
+### Fields
+
+| Field | Description |
+|-------|-------------|
+| `timestamp` | UTC timestamp of the event |
+| `type` | Event type (`auth_success`, `auth_failure`, `cert_issued`, `cert_error`) |
+| `subject` | OIDC subject identifier (`sub` claim) |
+| `email` | User's email from the OIDC token |
+| `issuer` | OIDC issuer URL |
+| `client_ip` | Remote address of the client |
+| `roles` | Talos roles assigned to the issued certificate |
+| `cert_ttl` | Lifetime of the issued certificate |
+| `cert_expiry` | When the issued certificate expires |
+| `error` | Error message (for failure events) |
+
+## Admin API
+
+The server provides optional admin endpoints for monitoring server activity and inspecting active certificates. These endpoints are protected by a bearer token.
+
+### Enabling the Admin API
+
+Set the `TALOSCTL_OIDC_ADMIN_TOKEN` environment variable to a secret value:
+
+```bash
+export TALOSCTL_OIDC_ADMIN_TOKEN=$(openssl rand -hex 32)
+```
+
+If this variable is not set, the admin endpoints return `403 Forbidden`.
+
+### Endpoints
+
+#### `GET /admin/stats`
+
+Returns aggregate server statistics.
+
+```bash
+curl -s -H "Authorization: Bearer $TALOSCTL_OIDC_ADMIN_TOKEN" \
+  https://localhost:8443/admin/stats | jq .
+```
+
+```json
+{
+  "started_at": "2026-02-17T14:00:00Z",
+  "uptime": "2h30m0s",
+  "total_certs_issued": 42,
+  "active_certs": 5,
+  "total_auth_successes": 45,
+  "total_auth_failures": 3,
+  "total_cert_errors": 0
+}
+```
+
+#### `GET /admin/certs`
+
+Returns the list of currently active (non-expired) issued certificates.
+
+```bash
+curl -s -H "Authorization: Bearer $TALOSCTL_OIDC_ADMIN_TOKEN" \
+  https://localhost:8443/admin/certs | jq .
+```
+
+```json
+[
+  {
+    "subject": "abc123",
+    "email": "user@example.com",
+    "issued_at": "2026-02-17T15:30:00Z",
+    "expires_at": "2026-02-17T16:30:00Z",
+    "client_ip": "192.168.1.10:52431",
+    "roles": ["os:admin"],
+    "ttl": "1h0m0s"
+  }
+]
+```
+
+Expired certificates are automatically pruned from the list on each request.
+
 ## Security Considerations
 
+- **TLS by default**: The server generates a self-signed TLS certificate at startup when no TLS configuration is provided. Plain HTTP requires explicitly setting `TALOSCTL_OIDC_INSECURE=true`
 - **Ephemeral certificates**: Client certificates are short-lived (default 1 hour). Users cannot extend or forge certificates without re-authenticating
 - **CA key isolation**: The Talos CA private key is held only by the server, never exposed to clients
 - **PKCE is mandatory**: The OIDC flow uses S256 challenge method, protecting against authorization code interception
@@ -438,12 +607,15 @@ talosctl-oidc status --context-name staging
 - **Token validation**: The server validates ID tokens against the OIDC provider's JWKS (RS256, ES256, EdDSA) or HMAC secret (HS256)
 - **The callback server binds to `127.0.0.1` only**, preventing access from other machines
 - **State parameter** is used for CSRF protection during the OIDC flow
+- **Admin API is opt-in**: The `/admin/*` endpoints are disabled by default and require setting `TALOSCTL_OIDC_ADMIN_TOKEN`. The token is compared using constant-time comparison to prevent timing attacks
+- **Audit logging** provides a tamper-evident record of all authentication events for compliance and security monitoring
 
 ## Troubleshooting
 
 ### "invalid_client" error during login
 
 The OIDC provider is rejecting the token request. Common causes:
+
 - The provider is configured as a **confidential client** but no `--client-secret` was provided. Either switch to a public client or pass `--client-secret`
 - The **Client ID** is incorrect
 
@@ -454,6 +626,7 @@ Another process is using port 8900. Use `--callback-port` to pick a different po
 ### "OIDC discovery failed"
 
 The tool could not reach the OIDC provider's `/.well-known/openid-configuration` endpoint. Verify:
+
 - The `--provider` / `--issuer-url` is correct and reachable
 - Your network/proxy allows access to the provider
 
@@ -464,6 +637,7 @@ The state parameter returned by the OIDC provider does not match what was sent. 
 ### Server: "loading CA" error
 
 The CA certificate and key files could not be loaded. Verify:
+
 - The files are valid PEM-encoded Ed25519 certificates/keys
 - You are using the **Talos API CA** (from `machine.ca` in `controlplane.yaml`), not the OS-level CA from `secrets.yaml`
 - The cert and key match (same public key)
