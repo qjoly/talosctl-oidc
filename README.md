@@ -364,7 +364,7 @@ Use the Talos `imager` container to produce an installer image that includes the
 EXTENSION_REF=$(crane digest ghcr.io/qjoly/talosctl-oidc:v0.1.0)
 
 # Build the installer (adjust the Talos version to match your cluster)
-TALOS_VERSION=v1.9.5
+TALOS_VERSION=v1.12.4
 
 docker run --rm -t -v $PWD/_out:/out \
   ghcr.io/siderolabs/imager:${TALOS_VERSION} installer \
@@ -386,13 +386,13 @@ crane push _out/metal-amd64-installer.tar ghcr.io/qjoly/talos-oidc-installer:${T
 ```yaml
 machine:
   install:
-    image: ghcr.io/qjoly/talos-oidc-installer:v1.9.5
+    image: ghcr.io/qjoly/talos-oidc-installer:v1.12.4
 ```
 
 **For an existing cluster**, upgrade nodes to the new installer:
 
 ```bash
-talosctl upgrade --image ghcr.io/qjoly/talos-oidc-installer:v1.9.5
+talosctl upgrade --image ghcr.io/qjoly/talos-oidc-installer:v1.12.4
 ```
 
 > You can also build an ISO for bare-metal boot by replacing `installer` with `iso` in the imager command.
