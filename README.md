@@ -40,6 +40,10 @@ sequenceDiagram
     User->>Talos: talosctl version (mTLS with ephemeral cert)
 ```
 
+## Demo
+
+![Demo](./demo.gif)
+
 ## Prerequisites
 
 - **Go 1.25+** (to build from source)
