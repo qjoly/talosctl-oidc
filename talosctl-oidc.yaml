@@ -19,6 +19,7 @@ container:
         - bind
         - rw
 depends:
+  - path: /var/lib
   - network:
       - addresses
       - connectivity
