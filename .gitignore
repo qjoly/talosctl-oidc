@@ -4,3 +4,4 @@ talosctl-oidc
 talos-admin.key
 talos-admin.crt
 talos-ca.crt
+patch-talosctl-oidc.yaml
