@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
   packages: write
+  pull-requests: write
 
 env:
   REGISTRY: ghcr.io
@@ -84,6 +85,8 @@ jobs:
   installer-image:
     runs-on: ubuntu-latest
     needs: extension-image
+    outputs:
+      tag: ${{ needs.extension-image.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -123,3 +126,78 @@ jobs:
             echo "Pushing $tar to $INSTALLER_IMAGE"
             crane push "$tar" "$INSTALLER_IMAGE"
           done
+
+  # -------------------------------------------------------------------
+  # Post a comment on the PR with testing instructions
+  # -------------------------------------------------------------------
+  pr-comment:
+    runs-on: ubuntu-latest
+    needs: installer-image
+    steps:
+      - name: Find existing comment
+        uses: peter-evans/find-comment@v3
+        id: find-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: github-actions[bot]
+          body-includes: "## Testing this PR"
+
+      - name: Post or update PR comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          edit-mode: replace
+          body: |
+            ## Testing this PR
+
+            Images for this PR have been built and pushed:
+
+            | Image | Tag |
+            |-------|-----|
+            | Extension | `ghcr.io/${{ github.repository }}:${{ needs.installer-image.outputs.tag }}` |
+            | Installer | `ghcr.io/${{ github.repository }}-installer:${{ needs.installer-image.outputs.tag }}` |
+
+            ### Upgrade a Talos node with this PR
+
+            ```bash
+            talosctl upgrade --image ghcr.io/${{ github.repository }}-installer:${{ needs.installer-image.outputs.tag }}
+            ```
+
+            ### Run the server locally (from binary)
+
+            ```bash
+            # Build from this branch
+            git checkout ${{ github.head_ref }}
+            go build -o talosctl-oidc .
+
+            # Start the server
+            TALOSCTL_OIDC_CA_CERT=talos-ca.crt \
+            TALOSCTL_OIDC_CA_KEY=talos-ca.key \
+            TALOSCTL_OIDC_ISSUER_URL=https://your-oidc-provider/.well-known/openid-configuration \
+            TALOSCTL_OIDC_CLIENT_ID=your-client-id \
+            TALOSCTL_OIDC_ENDPOINTS=10.0.0.1 \
+            TALOSCTL_OIDC_LISTEN=:8443 \
+            ./talosctl-oidc serve
+            ```
+
+            ### Login
+
+            ```bash
+            ./talosctl-oidc login \
+              --provider https://your-oidc-provider/ \
+              --client-id your-client-id \
+              --server https://localhost:8443 \
+              --server-ca server-ca.pem \
+              --context-name oidc
+            ```
+
+            ### Verify
+
+            ```bash
+            talosctl --context oidc version
+            ```
+
+            ---
+            *Built from ${{ github.event.pull_request.head.sha }}*
+
