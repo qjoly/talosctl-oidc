@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  TALOS_VERSION: v1.12.4
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,25 +36,90 @@ jobs:
       - name: Test
         run: go test ./...
 
-  build-image:
+  # -------------------------------------------------------------------
+  # Build and push the extension image with pr-<number> tag
+  # -------------------------------------------------------------------
+  extension-image:
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: build
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Compute PR tag
+        id: tag
+        run: echo "tag=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+
       - name: Update manifest version
         run: |
-          sed -i "s/APP_VERSION/dev/g" manifest.yaml
+          sed -i "s/APP_VERSION/${{ steps.tag.outputs.tag }}/g" manifest.yaml
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build extension image
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push extension image
         uses: docker/build-push-action@v6
         with:
           context: .
           target: extension
-          push: false
+          push: true
           platforms: linux/amd64,linux/arm64
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # -------------------------------------------------------------------
+  # Build and push the Talos installer image with pr-<number> tag
+  # -------------------------------------------------------------------
+  installer-image:
+    runs-on: ubuntu-latest
+    needs: extension-image
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Setup crane
+        uses: imjasonh/setup-crane@v0.5
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get extension digest
+        id: extension-digest
+        run: |
+          EXTENSION_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.extension-image.outputs.tag }}"
+          echo "digest=$(crane digest $EXTENSION_IMAGE)" >> $GITHUB_OUTPUT
+
+      - name: Build and push installer image
+        run: |
+          TAG="${{ needs.extension-image.outputs.tag }}"
+          EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}@${{ steps.extension-digest.outputs.digest }}"
+          INSTALLER_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-installer:${TAG}"
+
+          docker run --rm -t \
+            -v $PWD/_out:/out \
+            ghcr.io/siderolabs/imager:${{ env.TALOS_VERSION }} installer \
+            --system-extension-image "${EXTENSION_REF}"
+
+          for tar in _out/*.tar; do
+            [ -f "$tar" ] || continue
+            echo "Pushing $tar to $INSTALLER_IMAGE"
+            crane push "$tar" "$INSTALLER_IMAGE"
+          done

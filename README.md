@@ -243,6 +243,8 @@ talosctl-oidc serve
 | `TALOSCTL_OIDC_TLS_KEY` | No | | Path to TLS private key (must be set with TLS_CERT) |
 | `TALOSCTL_OIDC_INSECURE` | No | `false` | Set to `true` to serve plain HTTP |
 | `TALOSCTL_OIDC_DATA_DIR` | No | | Directory to persist self-signed TLS certs across restarts |
+| `TALOSCTL_OIDC_AUDIT_LOG` | No | stdout | Path to audit log file (`-` for stdout) |
+| `TALOSCTL_OIDC_ADMIN_TOKEN` | No | | Bearer token to protect `/admin/*` endpoints (required to enable admin API) |
 
 #### TLS Modes
 
@@ -265,6 +267,8 @@ don't need to update their `--server-ca` file.
 | `/exchange` | POST | Exchange an OIDC ID token for an ephemeral certificate |
 | `/healthz` | GET | Health check (returns `200 OK`) |
 | `/ca` | GET | Returns the self-signed CA PEM (only in self-signed mode) |
+| `/admin/stats` | GET | Server statistics (requires `Authorization: Bearer <admin-token>`) |
+| `/admin/certs` | GET | List active (non-expired) issued certs (requires `Authorization: Bearer <admin-token>`) |
 
 **Exchange request:**
 
@@ -486,6 +490,111 @@ talosctl-oidc status --context-name prod
 talosctl-oidc status --context-name staging
 ```
 
+## Audit Logging
+
+The server emits structured JSON audit events for every authentication attempt and certificate issuance. Each event is a single JSON line written to the configured output.
+
+### Configuration
+
+By default, audit events are written to **stdout** (mixed with regular log output). To write to a dedicated file:
+
+```bash
+export TALOSCTL_OIDC_AUDIT_LOG=/var/log/talosctl-oidc/audit.log
+```
+
+### Event Types
+
+| Event | Description |
+|-------|-------------|
+| `auth_success` | OIDC token validated successfully |
+| `auth_failure` | Token validation failed (invalid signature, expired, wrong audience, etc.) |
+| `cert_issued` | Ephemeral client certificate issued to authenticated user |
+| `cert_error` | Certificate generation failed after successful authentication |
+
+### Example Events
+
+```json
+{"timestamp":"2026-02-17T14:30:00Z","type":"cert_issued","subject":"abc123","email":"user@example.com","issuer":"https://idp.example.com/","client_ip":"192.168.1.10:52431","roles":["os:admin"],"cert_ttl":"1h0m0s","cert_expiry":"2026-02-17T15:30:00Z"}
+{"timestamp":"2026-02-17T14:31:00Z","type":"auth_failure","client_ip":"10.0.0.5:48291","error":"token expired"}
+```
+
+### Fields
+
+| Field | Description |
+|-------|-------------|
+| `timestamp` | UTC timestamp of the event |
+| `type` | Event type (`auth_success`, `auth_failure`, `cert_issued`, `cert_error`) |
+| `subject` | OIDC subject identifier (`sub` claim) |
+| `email` | User's email from the OIDC token |
+| `issuer` | OIDC issuer URL |
+| `client_ip` | Remote address of the client |
+| `roles` | Talos roles assigned to the issued certificate |
+| `cert_ttl` | Lifetime of the issued certificate |
+| `cert_expiry` | When the issued certificate expires |
+| `error` | Error message (for failure events) |
+
+## Admin API
+
+The server provides optional admin endpoints for monitoring server activity and inspecting active certificates. These endpoints are protected by a bearer token.
+
+### Enabling the Admin API
+
+Set the `TALOSCTL_OIDC_ADMIN_TOKEN` environment variable to a secret value:
+
+```bash
+export TALOSCTL_OIDC_ADMIN_TOKEN=$(openssl rand -hex 32)
+```
+
+If this variable is not set, the admin endpoints return `403 Forbidden`.
+
+### Endpoints
+
+#### `GET /admin/stats`
+
+Returns aggregate server statistics.
+
+```bash
+curl -s -H "Authorization: Bearer $TALOSCTL_OIDC_ADMIN_TOKEN" \
+  https://localhost:8443/admin/stats | jq .
+```
+
+```json
+{
+  "started_at": "2026-02-17T14:00:00Z",
+  "uptime": "2h30m0s",
+  "total_certs_issued": 42,
+  "active_certs": 5,
+  "total_auth_successes": 45,
+  "total_auth_failures": 3,
+  "total_cert_errors": 0
+}
+```
+
+#### `GET /admin/certs`
+
+Returns the list of currently active (non-expired) issued certificates.
+
+```bash
+curl -s -H "Authorization: Bearer $TALOSCTL_OIDC_ADMIN_TOKEN" \
+  https://localhost:8443/admin/certs | jq .
+```
+
+```json
+[
+  {
+    "subject": "abc123",
+    "email": "user@example.com",
+    "issued_at": "2026-02-17T15:30:00Z",
+    "expires_at": "2026-02-17T16:30:00Z",
+    "client_ip": "192.168.1.10:52431",
+    "roles": ["os:admin"],
+    "ttl": "1h0m0s"
+  }
+]
+```
+
+Expired certificates are automatically pruned from the list on each request.
+
 ## Security Considerations
 
 - **TLS by default**: The server generates a self-signed TLS certificate at startup when no TLS configuration is provided. Plain HTTP requires explicitly setting `TALOSCTL_OIDC_INSECURE=true`
@@ -496,6 +605,8 @@ talosctl-oidc status --context-name staging
 - **Token validation**: The server validates ID tokens against the OIDC provider's JWKS (RS256, ES256, EdDSA) or HMAC secret (HS256)
 - **The callback server binds to `127.0.0.1` only**, preventing access from other machines
 - **State parameter** is used for CSRF protection during the OIDC flow
+- **Admin API is opt-in**: The `/admin/*` endpoints are disabled by default and require setting `TALOSCTL_OIDC_ADMIN_TOKEN`. The token is compared using constant-time comparison to prevent timing attacks
+- **Audit logging** provides a tamper-evident record of all authentication events for compliance and security monitoring
 
 ## Troubleshooting
 
