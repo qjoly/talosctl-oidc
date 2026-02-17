@@ -226,7 +226,8 @@ func (s *Server) loadOrGenerateSelfSignedTLS() (*tls.Config, error) {
 
 	// Ensure the data directory exists.
 	if err := os.MkdirAll(s.cfg.DataDir, 0o700); err != nil {
-		return nil, fmt.Errorf("creating data directory %s: %w", s.cfg.DataDir, err)
+		log.Printf("WARNING: cannot create data directory %s: %v — falling back to in-memory TLS (certificates will not persist across restarts)", s.cfg.DataDir, err)
+		return tlsCfg, nil
 	}
 
 	// Write all four files.
@@ -240,7 +241,8 @@ func (s *Server) loadOrGenerateSelfSignedTLS() (*tls.Config, error) {
 		{srvKeyPath, srvKeyPEM},
 	} {
 		if err := os.WriteFile(f.path, f.data, 0o600); err != nil {
-			return nil, fmt.Errorf("writing %s: %w", f.path, err)
+			log.Printf("WARNING: cannot write %s: %v — falling back to in-memory TLS", f.path, err)
+			return tlsCfg, nil
 		}
 	}
 
