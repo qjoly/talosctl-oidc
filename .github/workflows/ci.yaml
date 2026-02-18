@@ -56,19 +56,26 @@ jobs:
           # Create a local tap
           brew tap-new local/test
           
+          # Create a source tarball of the current directory (excluding .git)
+          tar --exclude=.git -czf talosctl-oidc.tar.gz .
+          
+          # Calculate SHA256
+          SHA256=$(shasum -a 256 talosctl-oidc.tar.gz | awk '{print $1}')
+          
           # Copy formula to tap
           FORMULA_PATH=$(brew --repo local/test)/Formula/talosctl-oidc.rb
           cp Formula/talosctl-oidc.rb "$FORMULA_PATH"
           
-          # Point HEAD to the local checkout
-          # Use file:// protocol for local git repo
-          sed -i '' "s|head \".*\"|head \"file://$PWD\"|g" "$FORMULA_PATH"
+          # Update the formula to point to the local tarball
+          # Use file:// URL for the tarball
+          perl -pi -e "s|url \".*\"|url \"file://$PWD/talosctl-oidc.tar.gz\"|g" "$FORMULA_PATH"
+          perl -pi -e "s|sha256 \".*\"|sha256 \"$SHA256\"|g" "$FORMULA_PATH"
           
           # Print for debugging
           cat "$FORMULA_PATH"
           
-          # Install using HEAD (local checkout)
-          brew install --HEAD --verbose --build-from-source local/test/talosctl-oidc
+          # Install (verbose to see build logs)
+          brew install --verbose --build-from-source local/test/talosctl-oidc
           
           # Run the test block
           brew test local/test/talosctl-oidc
