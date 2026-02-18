@@ -60,8 +60,9 @@ jobs:
           FORMULA_PATH=$(brew --repo local/test)/Formula/talosctl-oidc.rb
           cp Formula/talosctl-oidc.rb "$FORMULA_PATH"
           
-          # Point HEAD to the local checkout using Perl to avoid sed issues
-          perl -pi -e "s|head \".*\"|head \"$PWD\"|g" "$FORMULA_PATH"
+          # Point HEAD to the local checkout
+          # Use file:// protocol for local git repo
+          sed -i '' "s|head \".*\"|head \"file://$PWD\"|g" "$FORMULA_PATH"
           
           # Print for debugging
           cat "$FORMULA_PATH"
