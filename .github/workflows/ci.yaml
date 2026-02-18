@@ -38,6 +38,25 @@ jobs:
         run: go test ./...
 
   # -------------------------------------------------------------------
+  # Test Homebrew formula
+  # -------------------------------------------------------------------
+  brew-test:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test Formula (build-from-source)
+        run: |
+          brew install --build-from-source ./Formula/talosctl-oidc.rb
+          brew test ./Formula/talosctl-oidc.rb
+
+  # -------------------------------------------------------------------
   # Build and push the extension image with pr-<number> tag
   # -------------------------------------------------------------------
   extension-image:
