@@ -181,11 +181,21 @@ jobs:
           fi
           EXTENSION_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}"
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "digest=$(crane digest $EXTENSION_IMAGE)" >> $GITHUB_OUTPUT
+          DIGEST=$(crane digest "${EXTENSION_IMAGE}" 2>/dev/null || true)
+          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
 
       - name: Build and push installer image
         run: |
-          EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.extension-digest.outputs.tag }}@${{ steps.extension-digest.outputs.digest }}"
+          TAG="${{ steps.extension-digest.outputs.tag }}"
+          DIGEST="${{ steps.extension-digest.outputs.digest }}"
+          
+          if [ -n "${DIGEST}" ]; then
+            EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}@${DIGEST}"
+          else
+            EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}"
+          fi
+          
+          echo "Using extension reference: ${EXTENSION_REF}"
           
           docker run --rm -t \
             -v $PWD/_out:/out \
