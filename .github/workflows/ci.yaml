@@ -53,7 +53,13 @@ jobs:
 
       - name: Test Formula (build-from-source)
         run: |
-          brew install --build-from-source ./Formula/talosctl-oidc.rb
+          # Point HEAD to the local checkout
+          sed -i '' "s|head \".*\"|head \"$PWD\"|g" Formula/talosctl-oidc.rb
+          
+          # Install using HEAD (local checkout)
+          brew install --HEAD --verbose --build-from-source ./Formula/talosctl-oidc.rb
+          
+          # Run the test block
           brew test ./Formula/talosctl-oidc.rb
 
   # -------------------------------------------------------------------
