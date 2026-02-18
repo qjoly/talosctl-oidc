@@ -80,6 +80,11 @@ jobs:
           # Run the test block
           brew test local/test/talosctl-oidc
 
+      - name: Verify Installation (Run Binary)
+        run: |
+          # Verify binary is in PATH and runnable
+          talosctl-oidc --help
+
   # -------------------------------------------------------------------
   # Build and push the extension image with pr-<number> tag
   # -------------------------------------------------------------------
