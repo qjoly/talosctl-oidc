@@ -57,10 +57,14 @@ jobs:
           brew tap-new local/test
           
           # Copy formula to tap
-          cp Formula/talosctl-oidc.rb $(brew --repo local/test)/Formula/
+          FORMULA_PATH=$(brew --repo local/test)/Formula/talosctl-oidc.rb
+          cp Formula/talosctl-oidc.rb "$FORMULA_PATH"
           
-          # Point HEAD to the local checkout
-          sed -i '' "s|head \".*\"|head \"$PWD\"|g" $(brew --repo local/test)/Formula/talosctl-oidc.rb
+          # Point HEAD to the local checkout using Perl to avoid sed issues
+          perl -pi -e "s|head \".*\"|head \"$PWD\"|g" "$FORMULA_PATH"
+          
+          # Print for debugging
+          cat "$FORMULA_PATH"
           
           # Install using HEAD (local checkout)
           brew install --HEAD --verbose --build-from-source local/test/talosctl-oidc
