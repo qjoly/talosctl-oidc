@@ -51,16 +51,22 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Test Formula (build-from-source)
+      - name: Test Formula
         run: |
+          # Create a local tap
+          brew tap-new local/test
+          
+          # Copy formula to tap
+          cp Formula/talosctl-oidc.rb $(brew --repo local/test)/Formula/
+          
           # Point HEAD to the local checkout
-          sed -i '' "s|head \".*\"|head \"$PWD\"|g" Formula/talosctl-oidc.rb
+          sed -i '' "s|head \".*\"|head \"$PWD\"|g" $(brew --repo local/test)/Formula/talosctl-oidc.rb
           
           # Install using HEAD (local checkout)
-          brew install --HEAD --verbose --build-from-source ./Formula/talosctl-oidc.rb
+          brew install --HEAD --verbose --build-from-source local/test/talosctl-oidc
           
           # Run the test block
-          brew test ./Formula/talosctl-oidc.rb
+          brew test local/test/talosctl-oidc
 
   # -------------------------------------------------------------------
   # Build and push the extension image with pr-<number> tag
