@@ -167,11 +167,15 @@ func ExchangeCode(ctx context.Context, provider *ProviderConfig, clientID, clien
 }
 
 // RefreshAccessToken uses a refresh token to obtain new tokens.
-func RefreshAccessToken(ctx context.Context, provider *ProviderConfig, clientID, clientSecret, refreshToken string) (*TokenResponse, error) {
+func RefreshAccessToken(ctx context.Context, provider *ProviderConfig, clientID, clientSecret, refreshToken string, scopes []string) (*TokenResponse, error) {
 	data := url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
 		"client_id":     {clientID},
+	}
+
+	if len(scopes) > 0 {
+		data.Set("scope", strings.Join(scopes, " "))
 	}
 
 	if clientSecret != "" {

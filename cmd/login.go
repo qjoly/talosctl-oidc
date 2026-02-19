@@ -34,6 +34,7 @@ var loginFlags struct {
 	talosconfig  string
 	serverCA     string
 	insecure     bool
+	watch        bool
 }
 
 var loginCmd = &cobra.Command{
@@ -52,13 +53,14 @@ func init() {
 	loginCmd.Flags().StringVar(&loginFlags.provider, "provider", "", "OIDC issuer URL (required)")
 	loginCmd.Flags().StringVar(&loginFlags.clientID, "client-id", "", "OIDC client ID (required)")
 	loginCmd.Flags().StringVar(&loginFlags.clientSecret, "client-secret", "", "OIDC client secret (optional, for confidential clients)")
-	loginCmd.Flags().StringSliceVar(&loginFlags.scopes, "scopes", []string{"openid", "profile", "email"}, "OIDC scopes")
+	loginCmd.Flags().StringSliceVar(&loginFlags.scopes, "scopes", []string{"openid", "profile", "email", "offline_access"}, "OIDC scopes")
 	loginCmd.Flags().IntVar(&loginFlags.callbackPort, "callback-port", 8900, "Local callback server port")
 	loginCmd.Flags().StringVar(&loginFlags.serverURL, "server", "", "Cert exchange server URL (required, e.g. https://localhost:8443)")
 	loginCmd.Flags().StringVar(&loginFlags.contextName, "context-name", "oidc", "Name for the talosconfig context")
 	loginCmd.Flags().StringVar(&loginFlags.talosconfig, "talosconfig", "", "Path to talosconfig file (default: ~/.talos/config)")
 	loginCmd.Flags().StringVar(&loginFlags.serverCA, "server-ca", "", "Path to PEM CA certificate to trust for the cert exchange server (for self-signed TLS)")
 	loginCmd.Flags().BoolVar(&loginFlags.insecure, "insecure", false, "Allow plain HTTP connection to the cert exchange server (skip TLS verification)")
+	loginCmd.Flags().BoolVar(&loginFlags.watch, "watch", false, "Run in the background and keep the Talos certificate fresh")
 
 	loginCmd.MarkFlagRequired("provider")
 	loginCmd.MarkFlagRequired("client-id")
@@ -68,65 +70,120 @@ func init() {
 }
 
 func runLogin(cmd *cobra.Command, args []string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
 	talosconfigPath := loginFlags.talosconfig
 	if talosconfigPath == "" {
 		talosconfigPath = talosconfig.DefaultPath()
 	}
 
-	// Validate TLS configuration.
-	serverURL := loginFlags.serverURL
-	if strings.HasPrefix(serverURL, "http://") && !loginFlags.insecure {
-		return fmt.Errorf("plain HTTP server URL requires --insecure flag; use --insecure or switch to https://")
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+
+		// Check if current certificate is still valid.
+		cfg, err := talosconfig.Load(talosconfigPath)
+		if err == nil {
+			if tctx, ok := cfg.Contexts[loginFlags.contextName]; ok {
+				if !tctx.IsCertificateExpired(5 * time.Minute) {
+					expiry, _ := tctx.GetCertificateExpiry()
+					if !loginFlags.watch {
+						fmt.Printf("Talos certificate for context %q is still valid until %s (no renewal needed).\n",
+							loginFlags.contextName, expiry.Format(time.RFC3339))
+						cancel()
+						return nil
+					}
+					// If watching, sleep until we need to renew.
+					// Check every minute or when we are 5 minutes before expiry.
+					renewAt := expiry.Add(-5 * time.Minute)
+					waitDur := time.Until(renewAt)
+					if waitDur > 1*time.Minute {
+						waitDur = 1 * time.Minute
+					}
+					if waitDur < 0 {
+						waitDur = 0
+					}
+					cancel()
+					time.Sleep(waitDur)
+					continue
+				}
+				fmt.Printf("Talos certificate for context %q is expired or expiring soon, renewing...\n", loginFlags.contextName)
+			}
+		}
+
+		// Validate TLS configuration.
+		serverURL := loginFlags.serverURL
+		if strings.HasPrefix(serverURL, "http://") && !loginFlags.insecure {
+			cancel()
+			return fmt.Errorf("plain HTTP server URL requires --insecure flag; use --insecure or switch to https://")
+		}
+
+		// Step 1: Authenticate via OIDC to get an ID token.
+		idToken, err := obtainIDToken(ctx)
+		if err != nil {
+			cancel()
+			if loginFlags.watch {
+				fmt.Printf("Renewal failed: %v. Retrying in 1 minute...\n", err)
+				time.Sleep(1 * time.Minute)
+				continue
+			}
+			return err
+		}
+
+		// Step 2: Exchange the ID token with the cert exchange server for ephemeral certs.
+		fmt.Printf("Exchanging token with cert server at %s...\n", serverURL)
+
+		httpClient, err := buildHTTPClient()
+		if err != nil {
+			cancel()
+			return fmt.Errorf("building HTTP client: %w", err)
+		}
+
+		certResp, err := exchangeTokenForCert(ctx, httpClient, serverURL, idToken)
+		if err != nil {
+			cancel()
+			if loginFlags.watch {
+				fmt.Printf("Cert exchange failed: %v. Retrying in 1 minute...\n", err)
+				time.Sleep(1 * time.Minute)
+				continue
+			}
+			return fmt.Errorf("cert exchange failed: %w", err)
+		}
+
+		fmt.Printf("Received ephemeral certificate (TTL: %ds)\n", certResp.TTL)
+
+		// Step 3: Write the ephemeral certs to talosconfig.
+		cfg, err = talosconfig.Load(talosconfigPath)
+		if err != nil {
+			cancel()
+			return fmt.Errorf("loading talosconfig: %w", err)
+		}
+
+		if err := talosconfig.SetContextFromPEM(
+			cfg,
+			loginFlags.contextName,
+			certResp.Endpoints,
+			[]byte(certResp.CA),
+			[]byte(certResp.Cert),
+			[]byte(certResp.Key),
+		); err != nil {
+			cancel()
+			return fmt.Errorf("setting talosconfig context: %w", err)
+		}
+
+		if err := talosconfig.Save(talosconfigPath, cfg); err != nil {
+			cancel()
+			return fmt.Errorf("saving talosconfig: %w", err)
+		}
+
+		fmt.Printf("Talosconfig updated: context %q set with endpoints %v\n", loginFlags.contextName, certResp.Endpoints)
+		fmt.Printf("Config written to: %s\n", talosconfigPath)
+		fmt.Printf("Certificate expires in %s\n", time.Duration(certResp.TTL)*time.Second)
+
+		cancel()
+		if !loginFlags.watch {
+			break
+		}
+		// Brief pause after successful renewal
+		time.Sleep(10 * time.Second)
 	}
-
-	// Step 1: Authenticate via OIDC to get an ID token.
-	idToken, err := obtainIDToken(ctx)
-	if err != nil {
-		return err
-	}
-
-	// Step 2: Exchange the ID token with the cert exchange server for ephemeral certs.
-	fmt.Printf("Exchanging token with cert server at %s...\n", serverURL)
-
-	httpClient, err := buildHTTPClient()
-	if err != nil {
-		return fmt.Errorf("building HTTP client: %w", err)
-	}
-
-	certResp, err := exchangeTokenForCert(ctx, httpClient, serverURL, idToken)
-	if err != nil {
-		return fmt.Errorf("cert exchange failed: %w", err)
-	}
-
-	fmt.Printf("Received ephemeral certificate (TTL: %ds)\n", certResp.TTL)
-
-	// Step 3: Write the ephemeral certs to talosconfig.
-	cfg, err := talosconfig.Load(talosconfigPath)
-	if err != nil {
-		return fmt.Errorf("loading talosconfig: %w", err)
-	}
-
-	if err := talosconfig.SetContextFromPEM(
-		cfg,
-		loginFlags.contextName,
-		certResp.Endpoints,
-		[]byte(certResp.CA),
-		[]byte(certResp.Cert),
-		[]byte(certResp.Key),
-	); err != nil {
-		return fmt.Errorf("setting talosconfig context: %w", err)
-	}
-
-	if err := talosconfig.Save(talosconfigPath, cfg); err != nil {
-		return fmt.Errorf("saving talosconfig: %w", err)
-	}
-
-	fmt.Printf("Talosconfig updated: context %q set with endpoints %v\n", loginFlags.contextName, certResp.Endpoints)
-	fmt.Printf("Config written to: %s\n", talosconfigPath)
-	fmt.Printf("Certificate expires in %s\n", time.Duration(certResp.TTL)*time.Second)
 
 	return nil
 }
@@ -197,7 +254,7 @@ func obtainIDToken(ctx context.Context) (string, error) {
 		if err != nil {
 			fmt.Printf("Discovery failed during refresh: %v\nFalling back to full authentication.\n", err)
 		} else {
-			tokenResp, err := oidc.RefreshAccessToken(ctx, provider, storedToken.ClientID, loginFlags.clientSecret, storedToken.RefreshToken)
+			tokenResp, err := oidc.RefreshAccessToken(ctx, provider, storedToken.ClientID, loginFlags.clientSecret, storedToken.RefreshToken, loginFlags.scopes)
 			if err != nil {
 				fmt.Printf("Token refresh failed: %v\nFalling back to full authentication.\n", err)
 			} else {
