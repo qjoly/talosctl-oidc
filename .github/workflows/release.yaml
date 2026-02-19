@@ -43,7 +43,9 @@ jobs:
       - name: Build binaries
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          LDFLAGS="-s -w -X main.version=${VERSION}"
+          COMMIT="${GITHUB_SHA}"
+          DATE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}"
 
           targets=(
             "linux/amd64"
