@@ -259,7 +259,8 @@ func obtainIDToken(ctx context.Context) (string, error) {
 
 // exchangeTokenForCert sends the ID token to the cert exchange server and returns the certificate response.
 func exchangeTokenForCert(ctx context.Context, client *http.Client, serverURL, idToken string) (*server.CertResponse, error) {
-	exchangeURL := serverURL + "/exchange"
+	// Trim trailing slash to avoid double-slash in URL construction
+	exchangeURL := strings.TrimRight(serverURL, "/") + "/exchange"
 
 	reqBody, err := json.Marshal(map[string]string{
 		"id_token": idToken,
