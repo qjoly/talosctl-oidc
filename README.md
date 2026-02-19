@@ -344,6 +344,18 @@ talosctl-oidc status [flags]
 | `--context-name` | No | `oidc` | Name of the talosconfig context to check |
 | `--talosconfig` | No | `~/.talos/config` | Path to talosconfig file |
 
+## Deployment Methods
+
+Choose the deployment method that best fits your infrastructure:
+
+| Method | Best for | Complexity | Notes |
+|---|---|---|---|
+| [Talos extension](#deploying-as-a-talos-extension) | Single-cluster, no existing k8s infra | Low | Baked into the node, restarts with the node |
+| [Kubernetes Deployment](#deploying-on-kubernetes) | Multi-cluster, existing k8s platform | Medium | Needs external access from developer workstations |
+| [Standalone systemd](#deploying-as-a-standalone-systemd-service) | Air-gapped, dedicated infra, simplicity | Low | Manual updates, needs a Linux host |
+
+---
+
 ## Deploying as a Talos Extension
 
 Talos system extensions must be **baked into the installer image** — you cannot install them at runtime. This requires building a custom installer image using the Talos `imager`.
@@ -437,6 +449,51 @@ To use your own TLS certificates instead, mount them as config files and set `TA
 
 See the [Environment Variables](#environment-variables) table for all available settings.
 
+#### Exposing the server on a host port
+
+By default, the extension listens inside the container's network namespace. Developer workstations cannot reach it unless you expose the server on a host port. Add a `hostPorts` entry to the `ExtensionServiceConfig`:
+
+```yaml
+apiVersion: v1alpha1
+kind: ExtensionServiceConfig
+name: talosctl-oidc
+# ... (configFiles and environment as above)
+hostPorts:
+  - hostPort: 8443
+    containerPort: 8443
+    protocol: tcp
+```
+
+After applying this config, port `8443` on the Talos node is forwarded to the server. Users can then run:
+
+```bash
+talosctl-oidc login \
+  --server https://<talos-node-ip>:8443 \
+  --server-ca server-ca.pem \
+  ...
+```
+
+> **Firewall note**: Make sure port 8443 is allowed from developer workstations to the Talos node.
+
+#### Retrieving the self-signed CA after startup
+
+When `TALOSCTL_OIDC_DATA_DIR` is set (recommended), the CA PEM is written to `<DATA_DIR>/ca.crt` and is stable across restarts. You can retrieve it directly from the server:
+
+```bash
+# Fetch the CA PEM from the /ca endpoint (only available in self-signed mode)
+curl -k https://<talos-node-ip>:8443/ca > server-ca.pem
+```
+
+Or read it from the extension logs on first start:
+
+```bash
+talosctl logs ext-talosctl-oidc | grep -A 20 "BEGIN CERTIFICATE"
+```
+
+#### Network requirement
+
+The Talos node must be able to reach the OIDC provider over HTTPS (e.g. `https://idp.example.com`). The server fetches the provider's JWKS keys to validate tokens. If the node is on an isolated network, ensure the provider's hostname is resolvable and reachable from the node.
+
 ### 5. Manage the extension service
 
 After the node boots (or upgrades) with the custom installer, the extension runs as `ext-talosctl-oidc`:
@@ -451,6 +508,382 @@ talosctl logs ext-talosctl-oidc
 # Restart the service
 talosctl service ext-talosctl-oidc restart
 ```
+
+---
+
+## Deploying on Kubernetes
+
+This method runs the server as a standard Kubernetes `Deployment`. It is a good fit if you already have a Kubernetes cluster and want to share the server across multiple Talos clusters or teams.
+
+**Requirements**: the server endpoint must be reachable from developer workstations, not just from inside the cluster. See the [Exposing the server](#exposing-the-server) section below.
+
+### 1. Extract the Talos CA into a Secret
+
+```bash
+# Extract the CA files from your controlplane.yaml first (see Setup section above)
+kubectl create secret generic talosctl-oidc-ca \
+  --from-file=ca.crt=talos-ca.crt \
+  --from-file=ca.key=talos-ca.key
+```
+
+> Keep `talos-ca.key` safe. It is the private key that signs all client certificates. Limit access to this Secret with RBAC.
+
+### 2. Create a PersistentVolumeClaim (recommended)
+
+A PVC stores the self-signed TLS certificate across pod restarts. Without it, the CA PEM changes on every restart and clients need to update their `--server-ca` file.
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: talosctl-oidc-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Mi
+```
+
+### 3. Deploy the server
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: talosctl-oidc
+  labels:
+    app: talosctl-oidc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: talosctl-oidc
+  template:
+    metadata:
+      labels:
+        app: talosctl-oidc
+    spec:
+      containers:
+        - name: talosctl-oidc
+          image: ghcr.io/qjoly/talosctl-oidc:latest
+          args: ["serve"]
+          ports:
+            - containerPort: 8443
+              name: https
+          env:
+            - name: TALOSCTL_OIDC_CA_CERT
+              value: /secrets/ca.crt
+            - name: TALOSCTL_OIDC_CA_KEY
+              value: /secrets/ca.key
+            - name: TALOSCTL_OIDC_ISSUER_URL
+              value: "https://idp.example.com/application/o/talos-oidc/"
+            - name: TALOSCTL_OIDC_CLIENT_ID
+              value: "your-client-id"
+            - name: TALOSCTL_OIDC_ENDPOINTS
+              value: "10.0.0.1,10.0.0.2"
+            - name: TALOSCTL_OIDC_CERT_TTL
+              value: "1h"
+            - name: TALOSCTL_OIDC_ROLES
+              value: "os:admin"
+            - name: TALOSCTL_OIDC_DATA_DIR
+              value: /data
+            # Optional: enable the admin API
+            # - name: TALOSCTL_OIDC_ADMIN_TOKEN
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: talosctl-oidc-admin
+            #       key: token
+          volumeMounts:
+            - name: ca-secret
+              mountPath: /secrets
+              readOnly: true
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: ca-secret
+          secret:
+            secretName: talosctl-oidc-ca
+            defaultMode: 0400
+        - name: data
+          persistentVolumeClaim:
+            claimName: talosctl-oidc-data
+```
+
+Apply it:
+
+```bash
+kubectl apply -f pvc.yaml
+kubectl apply -f deployment.yaml
+```
+
+### 4. Expose the server
+
+The server does mTLS termination itself — the client must establish a TLS connection directly to it to verify the CA certificate. **TLS termination at the ingress layer does not work.**
+
+Choose one of the following options:
+
+#### Option A — LoadBalancer Service (simplest)
+
+If your cluster has a cloud load balancer or a tool like MetalLB:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: talosctl-oidc
+spec:
+  type: LoadBalancer
+  selector:
+    app: talosctl-oidc
+  ports:
+    - port: 8443
+      targetPort: 8443
+      protocol: TCP
+```
+
+Wait for the external IP:
+
+```bash
+kubectl get svc talosctl-oidc
+# NAME             TYPE           CLUSTER-IP     EXTERNAL-IP    PORT(S)          AGE
+# talosctl-oidc    LoadBalancer   10.96.12.34    203.0.113.10   8443:32443/TCP   1m
+```
+
+Users connect to `https://203.0.113.10:8443`.
+
+#### Option B — NodePort Service
+
+If you don't have a load balancer, expose the server on a fixed port on every node:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: talosctl-oidc
+spec:
+  type: NodePort
+  selector:
+    app: talosctl-oidc
+  ports:
+    - port: 8443
+      targetPort: 8443
+      nodePort: 32443
+      protocol: TCP
+```
+
+Users connect to `https://<any-node-ip>:32443`.
+
+#### Option C — Ingress with TLS passthrough
+
+If your ingress controller supports TLS passthrough (e.g. nginx with `ssl-passthrough`, or Traefik with `passthrough` mode), the ingress forwards the raw TLS connection directly to the pod. The client can then verify the server's self-signed CA.
+
+> Do **not** use a standard TLS terminating ingress. It will break the mTLS handshake the client relies on.
+
+Example with nginx:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: talosctl-oidc
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: oidc.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: talosctl-oidc
+                port:
+                  number: 8443
+```
+
+Users connect to `https://oidc.example.com:443`.
+
+### 5. Retrieve the server CA and log in
+
+```bash
+# Fetch the self-signed CA from the /ca endpoint
+curl -k https://<external-ip>:8443/ca > server-ca.pem
+
+# Log in
+talosctl-oidc login \
+  --provider https://idp.example.com/application/o/talos-oidc/ \
+  --client-id your-client-id \
+  --server https://<external-ip>:8443 \
+  --server-ca server-ca.pem \
+  --context-name oidc
+```
+
+---
+
+## Deploying as a Standalone systemd Service
+
+This method runs the server directly on a Linux host (a jump host, a VM, or any machine that developer workstations can reach). No Kubernetes or Talos node is required.
+
+### 1. Install the binary
+
+**From GitHub releases** (replace the version as needed):
+
+```bash
+curl -L https://github.com/qjoly/talosctl-oidc/releases/latest/download/talosctl-oidc-linux-amd64 \
+  -o /usr/local/bin/talosctl-oidc
+chmod +x /usr/local/bin/talosctl-oidc
+```
+
+**From source**:
+
+```bash
+git clone https://github.com/qjoly/talosctl-oidc.git
+cd talosctl-oidc
+go build -o /usr/local/bin/talosctl-oidc .
+```
+
+### 2. Create a dedicated user and directories
+
+```bash
+useradd --system --no-create-home --shell /sbin/nologin talosctl-oidc
+
+mkdir -p /etc/talosctl-oidc /var/lib/talosctl-oidc /var/log/talosctl-oidc
+chown talosctl-oidc:talosctl-oidc /var/lib/talosctl-oidc /var/log/talosctl-oidc
+chmod 750 /var/lib/talosctl-oidc
+```
+
+### 3. Copy the CA files
+
+```bash
+# Extract first (see Setup section above)
+cp talos-ca.crt /etc/talosctl-oidc/ca.crt
+cp talos-ca.key /etc/talosctl-oidc/ca.key
+
+chown talosctl-oidc:talosctl-oidc /etc/talosctl-oidc/ca.crt /etc/talosctl-oidc/ca.key
+chmod 400 /etc/talosctl-oidc/ca.key
+chmod 444 /etc/talosctl-oidc/ca.crt
+```
+
+### 4. Create the environment file
+
+```bash
+cat > /etc/talosctl-oidc/env << 'EOF'
+TALOSCTL_OIDC_CA_CERT=/etc/talosctl-oidc/ca.crt
+TALOSCTL_OIDC_CA_KEY=/etc/talosctl-oidc/ca.key
+TALOSCTL_OIDC_ISSUER_URL=https://idp.example.com/application/o/talos-oidc/
+TALOSCTL_OIDC_CLIENT_ID=your-client-id
+TALOSCTL_OIDC_ENDPOINTS=10.0.0.1,10.0.0.2
+TALOSCTL_OIDC_CERT_TTL=1h
+TALOSCTL_OIDC_ROLES=os:admin
+TALOSCTL_OIDC_DATA_DIR=/var/lib/talosctl-oidc
+TALOSCTL_OIDC_AUDIT_LOG=/var/log/talosctl-oidc/audit.log
+EOF
+
+chmod 600 /etc/talosctl-oidc/env
+chown talosctl-oidc:talosctl-oidc /etc/talosctl-oidc/env
+```
+
+> The env file contains the CA key path and OIDC client settings. Restrict access with `chmod 600`.
+
+### 5. Create the systemd unit
+
+```bash
+cat > /etc/systemd/system/talosctl-oidc.service << 'EOF'
+[Unit]
+Description=talosctl-oidc certificate exchange server
+Documentation=https://github.com/qjoly/talosctl-oidc
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=talosctl-oidc
+Group=talosctl-oidc
+EnvironmentFile=/etc/talosctl-oidc/env
+ExecStart=/usr/local/bin/talosctl-oidc serve
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/talosctl-oidc /var/log/talosctl-oidc
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+### 6. Enable and start the service
+
+```bash
+systemctl daemon-reload
+systemctl enable --now talosctl-oidc
+
+# Check status
+systemctl status talosctl-oidc
+
+# View logs
+journalctl -u talosctl-oidc -f
+```
+
+### 7. Open the firewall
+
+Allow TCP port 8443 from developer workstations only. Example with `ufw`:
+
+```bash
+ufw allow from <developer-subnet> to any port 8443 proto tcp
+```
+
+Or with `firewalld`:
+
+```bash
+firewall-cmd --add-rich-rule='rule family="ipv4" source address="<developer-subnet>" port port="8443" protocol="tcp" accept' --permanent
+firewall-cmd --reload
+```
+
+### 8. Retrieve the server CA and log in
+
+The CA PEM is stable across restarts when `TALOSCTL_OIDC_DATA_DIR` is set:
+
+```bash
+curl -k https://<host-ip>:8443/ca > server-ca.pem
+
+talosctl-oidc login \
+  --provider https://idp.example.com/application/o/talos-oidc/ \
+  --client-id your-client-id \
+  --server https://<host-ip>:8443 \
+  --server-ca server-ca.pem \
+  --context-name oidc
+```
+
+---
 
 ## Token Caching Behavior
 
