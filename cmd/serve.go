@@ -26,8 +26,10 @@ and issues ephemeral Talos client certificates.
 
 All configuration is done via environment variables:
 
-  TALOSCTL_OIDC_CA_CERT        Path to Talos CA certificate (required)
-  TALOSCTL_OIDC_CA_KEY         Path to Talos CA private key (required)
+  TALOSCTL_OIDC_CA_CERT        Path to Talos CA certificate file (required unless CA_CERT_DATA is set)
+  TALOSCTL_OIDC_CA_KEY         Path to Talos CA private key file (required unless CA_KEY_DATA is set)
+  TALOSCTL_OIDC_CA_CERT_DATA   PEM-encoded Talos CA certificate, supplied inline (takes precedence over CA_CERT)
+  TALOSCTL_OIDC_CA_KEY_DATA    PEM-encoded Talos CA private key, supplied inline (takes precedence over CA_KEY)
   TALOSCTL_OIDC_ISSUER_URL     OIDC issuer URL for token validation (required)
   TALOSCTL_OIDC_CLIENT_ID      Expected OIDC client ID / audience (required)
   TALOSCTL_OIDC_ENDPOINTS      Talos node endpoints, comma-separated (required)
@@ -70,6 +72,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Read all configuration from environment variables.
 	caCert := os.Getenv("TALOSCTL_OIDC_CA_CERT")
 	caKey := os.Getenv("TALOSCTL_OIDC_CA_KEY")
+	caCertData := os.Getenv("TALOSCTL_OIDC_CA_CERT_DATA")
+	caKeyData := os.Getenv("TALOSCTL_OIDC_CA_KEY_DATA")
 	issuerURL := os.Getenv("TALOSCTL_OIDC_ISSUER_URL")
 	clientID := os.Getenv("TALOSCTL_OIDC_CLIENT_ID")
 	endpointsRaw := os.Getenv("TALOSCTL_OIDC_ENDPOINTS")
@@ -90,11 +94,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Validate required env vars.
 	var missing []string
-	if caCert == "" {
-		missing = append(missing, "TALOSCTL_OIDC_CA_CERT")
+	if caCert == "" && caCertData == "" {
+		missing = append(missing, "TALOSCTL_OIDC_CA_CERT or TALOSCTL_OIDC_CA_CERT_DATA")
 	}
-	if caKey == "" {
-		missing = append(missing, "TALOSCTL_OIDC_CA_KEY")
+	if caKey == "" && caKeyData == "" {
+		missing = append(missing, "TALOSCTL_OIDC_CA_KEY or TALOSCTL_OIDC_CA_KEY_DATA")
 	}
 	if issuerURL == "" {
 		missing = append(missing, "TALOSCTL_OIDC_ISSUER_URL")
@@ -141,12 +145,24 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	// Load the Talos CA.
-	ca, err := certsign.LoadCA(caCert, caKey)
-	if err != nil {
-		return fmt.Errorf("loading CA: %w", err)
+	// TALOSCTL_OIDC_CA_CERT_DATA / TALOSCTL_OIDC_CA_KEY_DATA take precedence when set
+	// (PEM content supplied directly, e.g. from a Kubernetes Secret env var).
+	// Otherwise fall back to file paths via TALOSCTL_OIDC_CA_CERT / TALOSCTL_OIDC_CA_KEY.
+	var ca *certsign.CA
+	var caErr error
+	if caCertData != "" && caKeyData != "" {
+		ca, caErr = certsign.ParseCA([]byte(caCertData), []byte(caKeyData))
+		if caErr != nil {
+			return fmt.Errorf("loading CA from inline data: %w", caErr)
+		}
+		log.Printf("Loaded Talos CA from inline data (TALOSCTL_OIDC_CA_CERT_DATA)")
+	} else {
+		ca, caErr = certsign.LoadCA(caCert, caKey)
+		if caErr != nil {
+			return fmt.Errorf("loading CA: %w", caErr)
+		}
+		log.Printf("Loaded Talos CA from %s", caCert)
 	}
-
-	log.Printf("Loaded Talos CA from %s", caCert)
 
 	// Initialize the audit logger.
 	auditLogger, err := audit.NewLogger(auditLogPath)

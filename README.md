@@ -114,6 +114,7 @@ Create a client application in your OIDC provider with the following settings:
 3. Set **Client type** to **Public**
 4. Set **Redirect URIs** to `http://127.0.0.1:8900/callback`
 5. Under **Advanced**, ensure **Subject mode** is set appropriately
+6. Add scopes `openid`, `profile`, `offline_access` and `email`
 6. Create an **Application** linked to this provider
 
 #### Keycloak
@@ -360,14 +361,7 @@ Choose the deployment method that best fits your infrastructure:
 
 Talos system extensions must be **baked into the installer image** — you cannot install them at runtime. This requires building a custom installer image using the Talos `imager`.
 
-### 1. Build and push the extension image
-
-```bash
-docker build -t ghcr.io/qjoly/talosctl-oidc:v0.1.0 --target extension .
-docker push ghcr.io/qjoly/talosctl-oidc:v0.1.0
-```
-
-### 2. Build a custom Talos installer with the extension
+### 1. Build a custom Talos installer with the extension (optional)
 
 Use the Talos `imager` container to produce an installer image that includes the extension. You need [`crane`](https://github.com/google/go-containerregistry/tree/main/cmd/crane) to push the result.
 
@@ -391,25 +385,25 @@ Push it to your container registry:
 crane push _out/metal-amd64-installer.tar ghcr.io/qjoly/talos-oidc-installer:${TALOS_VERSION}
 ```
 
-### 3. Install or upgrade with the custom installer
+### 2. Install or upgrade with the custom installer
 
 **For a new installation**, reference the custom installer in your machine config:
 
 ```yaml
 machine:
   install:
-    image: ghcr.io/qjoly/talos-oidc-installer:v1.12.4
+    image: ghcr.io/qjoly/talos-oidc-installer:v0.1.0
 ```
 
 **For an existing cluster**, upgrade nodes to the new installer:
 
 ```bash
-talosctl upgrade --image ghcr.io/qjoly/talos-oidc-installer:v1.12.4
+talosctl upgrade --image ghcr.io/qjoly/talosctl-oidc-installer:v0.1.0
 ```
 
 > You can also build an ISO for bare-metal boot by replacing `installer` with `iso` in the imager command.
 
-### 4. Configure the extension service
+### 3. Configure the extension service
 
 The extension reads its configuration from an `ExtensionServiceConfig` document in the Talos machine config. The CA certificate and key are provided as config files, and all runtime settings are passed via environment variables.
 
@@ -448,32 +442,6 @@ If the data directory is not writable (e.g. the mount is missing), the server fa
 To use your own TLS certificates instead, mount them as config files and set `TALOSCTL_OIDC_TLS_CERT` and `TALOSCTL_OIDC_TLS_KEY`.
 
 See the [Environment Variables](#environment-variables) table for all available settings.
-
-#### Exposing the server on a host port
-
-By default, the extension listens inside the container's network namespace. Developer workstations cannot reach it unless you expose the server on a host port. Add a `hostPorts` entry to the `ExtensionServiceConfig`:
-
-```yaml
-apiVersion: v1alpha1
-kind: ExtensionServiceConfig
-name: talosctl-oidc
-# ... (configFiles and environment as above)
-hostPorts:
-  - hostPort: 8443
-    containerPort: 8443
-    protocol: tcp
-```
-
-After applying this config, port `8443` on the Talos node is forwarded to the server. Users can then run:
-
-```bash
-talosctl-oidc login \
-  --server https://<talos-node-ip>:8443 \
-  --server-ca server-ca.pem \
-  ...
-```
-
-> **Firewall note**: Make sure port 8443 is allowed from developer workstations to the Talos node.
 
 #### Retrieving the self-signed CA after startup
 
