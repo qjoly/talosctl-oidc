@@ -10,7 +10,16 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /talosctl-oidc .
 
-# Stage 2: Talos system extension image (must be FROM scratch)
+# Stage 2: Kubernetes server image — standard binary path + system CA bundle.
+# This is what the Helm chart deploys; it is NOT a Talos extension.
+FROM scratch AS server
+
+COPY --from=builder /talosctl-oidc /talosctl-oidc
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+CMD ["/talosctl-oidc", "serve"]
+
+# Stage 3: Talos system extension image (must be FROM scratch)
 FROM scratch AS extension
 
 # Extension metadata

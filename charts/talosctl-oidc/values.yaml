@@ -1,16 +1,16 @@
 # Default values for talosctl-oidc.
 
 image:
-  repository: ghcr.io/qjoly/talosctl-oidc
+  # The server image is a standard scratch image with the binary at /talosctl-oidc
+  # and the system CA bundle at /etc/ssl/certs/ca-certificates.crt.
+  # It is suitable for running as a Kubernetes Deployment.
+  # The extension image (ghcr.io/qjoly/talosctl-oidc) is for Talos system extensions only.
+  repository: ghcr.io/qjoly/talosctl-oidc-server
   pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
   tag: "pr-69"
-  # If using the provided Dockerfile's 'extension' stage image, the binary is at:
-  # command: ["/rootfs/usr/local/lib/containers/talosctl-oidc/talosctl-oidc"]
-  # If using a standard build (like the 'builder' stage), the binary is likely at:
-  # command: ["/talosctl-oidc"]
-  # Default matches the extension stage image published via the Dockerfile:
-  command: ["/rootfs/usr/local/lib/containers/talosctl-oidc/talosctl-oidc"]
+  # Binary path in the server image:
+  command: ["/talosctl-oidc"]
 
 imagePullSecrets: []
 nameOverride: ""
