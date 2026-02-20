@@ -21,3 +21,5 @@ COPY --from=builder /talosctl-oidc /rootfs/usr/local/lib/containers/talosctl-oid
 
 # Extension service configuration
 COPY talosctl-oidc.yaml /rootfs/usr/local/etc/containers/talosctl-oidc.yaml
+
+CMD ["/rootfs/usr/local/lib/containers/talosctl-oidc/talosctl-oidc", "serve"]
