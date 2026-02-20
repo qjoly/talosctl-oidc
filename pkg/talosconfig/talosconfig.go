@@ -2,10 +2,13 @@ package talosconfig
 
 import (
 	"bytes"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -71,11 +74,53 @@ func Save(path string, config *Config) error {
 		return fmt.Errorf("marshaling talosconfig: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("writing talosconfig: %w", err)
+	// Write to a temporary file first for atomic replacement.
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+		return fmt.Errorf("writing temporary talosconfig: %w", err)
+	}
+
+	// Rename the temporary file to the final path.
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath) // clean up on failure
+		return fmt.Errorf("replacing talosconfig: %w", err)
 	}
 
 	return nil
+}
+
+// GetCertificateExpiry parses the client certificate in the context and returns its expiry time.
+func (c *Context) GetCertificateExpiry() (time.Time, error) {
+	if c.Crt == "" {
+		return time.Time{}, fmt.Errorf("no certificate in context")
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(c.Crt)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("decoding certificate: %w", err)
+	}
+
+	block, _ := pem.Decode(decoded)
+	if block == nil {
+		return time.Time{}, fmt.Errorf("failed to parse certificate PEM")
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parsing certificate: %w", err)
+	}
+
+	return cert.NotAfter, nil
+}
+
+// IsCertificateExpired reports whether the certificate in the context has expired
+// or will expire within the given threshold.
+func (c *Context) IsCertificateExpired(threshold time.Duration) bool {
+	expiry, err := c.GetCertificateExpiry()
+	if err != nil {
+		return true // treat as expired if we can't parse it
+	}
+	return time.Now().Add(threshold).After(expiry)
 }
 
 // SetContext adds or updates a context in the talosconfig with the given certificates

@@ -12,8 +12,8 @@ Talos Linux uses **mTLS (mutual TLS) with client certificates** for API authenti
 2. A **user** runs `talosctl-oidc login`, which opens a browser for OIDC authentication (Authorization Code + PKCE)
 3. The client sends the resulting ID token to the server
 4. The server validates the token (signature, issuer, audience, expiry) and signs an **ephemeral short-lived client certificate** (e.g., 1 hour)
-5. The client writes the certificate to `~/.talos/config`
-6. When the certificate expires, the user must re-authenticate via OIDC
+5. The client writes the certificate to `~/.talos/config` (using atomic updates to prevent corruption)
+6. Before expiry, the client can proactively renew the certificate using the OIDC refresh token, either on demand or in the background via the `--watch` flag
 
 ```mermaid
 sequenceDiagram
@@ -209,6 +209,7 @@ This will:
 2. Wait for you to authenticate
 3. Exchange the ID token with the cert server for an ephemeral certificate (over TLS)
 4. Write the certificate to `~/.talos/config` under the `oidc` context
+5. (Optional) If `--watch` is provided, stay in the foreground and refresh certificates as they approach expiry
 
 ### 5. Use talosctl
 
@@ -249,6 +250,7 @@ talosctl-oidc serve
 | `TALOSCTL_OIDC_DATA_DIR` | No | | Directory to persist self-signed TLS certs across restarts |
 | `TALOSCTL_OIDC_AUDIT_LOG` | No | stdout | Path to audit log file (`-` for stdout) |
 | `TALOSCTL_OIDC_ADMIN_TOKEN` | No | | Bearer token to protect `/admin/*` endpoints (required to enable admin API) |
+| `DEBUG` | No | | Set to any value to enable detailed debug logging |
 
 #### TLS Modes
 
@@ -312,6 +314,7 @@ talosctl-oidc login [flags]
 | `--talosconfig` | No | `~/.talos/config` | Path to talosconfig file |
 | `--server-ca` | No | | Path to PEM CA certificate to trust for the server (for self-signed TLS) |
 | `--insecure` | No | `false` | Allow plain HTTP connection to the server |
+| `--watch` | No | `false` | Run in the background and keep the Talos certificate fresh |
 
 ### `logout`
 
@@ -463,6 +466,7 @@ OIDC tokens are cached in the **system keychain** (macOS Keychain, GNOME Keyring
 | Expired token with refresh token | Silently refreshes, no browser needed |
 | Expired token without refresh token | Opens browser for full OIDC login |
 | Refresh fails | Falls back to full OIDC login |
+| Certificate about to expire | Proactively renews using refresh token if `--watch` or rerun `login` |
 
 The login flow has a **5-minute timeout**. If the user does not complete authentication in the browser within that window, the command exits with an error.
 
@@ -613,6 +617,20 @@ Expired certificates are automatically pruned from the list on each request.
 - **State parameter** is used for CSRF protection during the OIDC flow
 - **Admin API is opt-in**: The `/admin/*` endpoints are disabled by default and require setting `TALOSCTL_OIDC_ADMIN_TOKEN`. The token is compared using constant-time comparison to prevent timing attacks
 - **Audit logging** provides a tamper-evident record of all authentication events for compliance and security monitoring
+
+## Debugging
+
+You can enable detailed internal tracing for both the client and the server by setting the `DEBUG` environment variable to any non-empty value.
+
+```bash
+# Debug client-side login flow
+DEBUG=1 talosctl-oidc login --provider ...
+
+# Debug server-side exchange flow
+DEBUG=1 talosctl-oidc serve
+```
+
+Debug logs include information about OIDC discovery, PKCE challenges, token response fields, keychain/file storage operations, and certificate expiry calculations.
 
 ## Troubleshooting
 

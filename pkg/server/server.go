@@ -29,6 +29,12 @@ import (
 	"github.com/qjoly/talosctl-oidc/pkg/oidc"
 )
 
+func debug(format string, v ...interface{}) {
+	if os.Getenv("DEBUG") != "" {
+		log.Printf("[DEBUG] "+format, v...)
+	}
+}
+
 // Config holds the configuration for the cert exchange server.
 type Config struct {
 	// ListenAddr is the address to listen on (e.g. ":8443").
@@ -431,6 +437,7 @@ func (s *Server) handleCA(w http.ResponseWriter, r *http.Request) {
 // Body: {"id_token": "eyJ..."}
 // Response: {"ca": "...", "cert": "...", "key": "...", "endpoints": [...], "ttl_seconds": 3600}
 func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
+	debug("Received /exchange request from %s", r.RemoteAddr)
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -441,6 +448,7 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	// Parse request body.
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
 	if err != nil {
+		debug("Failed to read request body: %v", err)
 		writeError(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
@@ -449,18 +457,22 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		IDToken string `json:"id_token"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
+		debug("Failed to unmarshal JSON body: %v", err)
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
 	if req.IDToken == "" {
+		debug("ID token missing in request body")
 		writeError(w, http.StatusBadRequest, "id_token is required")
 		return
 	}
 
+	debug("Validating OIDC ID token...")
 	// Validate the OIDC token.
 	tc, err := s.validateToken(r.Context(), req.IDToken)
 	if err != nil {
+		debug("Token validation failed: %v", err)
 		log.Printf("Token validation failed: %v", err)
 		s.auditLog(audit.Event{
 			Type:     audit.EventAuthFailure,
@@ -470,6 +482,7 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid token: "+err.Error())
 		return
 	}
+	debug("Token validated successfully for user: %s (%s)", tc.Subject, tc.Email)
 
 	// Auth succeeded.
 	s.auditLog(audit.Event{
@@ -480,9 +493,11 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		ClientIP: clientIP,
 	})
 
+	debug("Generating ephemeral client certificate for roles: %v", s.cfg.Roles)
 	// Generate ephemeral client certificate.
 	clientCert, err := certsign.GenerateClientCert(s.cfg.CA, s.cfg.Roles, s.cfg.CertTTL)
 	if err != nil {
+		debug("Certificate generation failed: %v", err)
 		log.Printf("Certificate generation failed: %v", err)
 		s.auditLog(audit.Event{
 			Type:     audit.EventCertError,
@@ -494,6 +509,7 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to generate certificate")
 		return
 	}
+	debug("Certificate generated successfully")
 
 	certExpiry := time.Now().Add(s.cfg.CertTTL)
 
@@ -538,23 +554,28 @@ type tokenClaims struct {
 //
 // On success it returns the extracted identity claims.
 func (s *Server) validateToken(ctx context.Context, idToken string) (*tokenClaims, error) {
+	debug("Starting token validation for issuer: %s", s.cfg.IssuerURL)
 	// Discover the OIDC provider to get the JWKS URI.
 	provider, err := oidc.Discover(ctx, s.cfg.IssuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("OIDC discovery failed: %w", err)
 	}
+	debug("OIDC provider discovered, fetching JWKS from %s", provider.JWKSURI)
 
 	// Fetch the JWKS.
 	jwks, err := oidc.FetchJWKS(ctx, provider.JWKSURI)
 	if err != nil {
 		return nil, fmt.Errorf("fetching JWKS: %w", err)
 	}
+	debug("JWKS fetched (keys: %d)", len(jwks.Keys))
 
 	// Parse and validate the token.
+	debug("Verifying ID token signature and claims (ClientID: %s)...", s.cfg.ClientID)
 	claims, err := oidc.ValidateIDToken(idToken, jwks, s.cfg.IssuerURL, s.cfg.ClientID, s.cfg.ClientSecret)
 	if err != nil {
 		return nil, err
 	}
+	debug("ID token verification successful")
 
 	tc := &tokenClaims{}
 	if sub, ok := claims["sub"].(string); ok {
