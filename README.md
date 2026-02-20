@@ -104,7 +104,7 @@ Create a client application in your OIDC provider with the following settings:
 | Client type | Public |
 | Grant type | Authorization Code |
 | Redirect URI | `http://127.0.0.1:8900/callback` |
-| Scopes | `openid`, `profile`, `email` |
+| Scopes | `openid`, `profile`, `email`, `offline_access` |
 | PKCE | Enabled (S256) |
 
 #### Authentik
