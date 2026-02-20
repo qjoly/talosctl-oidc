@@ -75,7 +75,7 @@ jobs:
           target: extension
           push: true
           platforms: linux/amd64
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-talos-ext:${{ steps.tag.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -145,7 +145,7 @@ jobs:
       - name: Get extension digest
         id: extension-digest
         run: |
-          EXTENSION_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.extension-image.outputs.tag }}"
+          EXTENSION_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-talos-ext:${{ needs.extension-image.outputs.tag }}"
           DIGEST=$(crane digest "${EXTENSION_IMAGE}" 2>/dev/null || true)
           echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
 
@@ -155,9 +155,9 @@ jobs:
           DIGEST="${{ steps.extension-digest.outputs.digest }}"
           
           if [ -n "${DIGEST}" ]; then
-            EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}@${DIGEST}"
+            EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-talos-ext:${TAG}@${DIGEST}"
           else
-            EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}"
+            EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-talos-ext:${TAG}"
           fi
           
           echo "Using extension reference: ${EXTENSION_REF}"
@@ -237,7 +237,7 @@ jobs:
 
             | Image | Tag |
             |-------|-----|
-            | Extension | `ghcr.io/${{ github.repository }}:${{ needs.installer-image.outputs.tag }}` |
+            | Extension | `ghcr.io/${{ github.repository }}-talos-ext:${{ needs.installer-image.outputs.tag }}` |
             | Server (Kubernetes) | `ghcr.io/${{ github.repository }}-server:${{ needs.installer-image.outputs.tag }}` |
             | Installer | `ghcr.io/${{ github.repository }}-installer:${{ needs.installer-image.outputs.tag }}` |
             | Helm chart | `oci://ghcr.io/${{ github.repository_owner }}/charts/talosctl-oidc:0.0.0-${{ needs.installer-image.outputs.tag }}` |

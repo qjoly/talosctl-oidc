@@ -4,7 +4,7 @@ image:
   # The server image is a standard scratch image with the binary at /talosctl-oidc
   # and the system CA bundle at /etc/ssl/certs/ca-certificates.crt.
   # It is suitable for running as a Kubernetes Deployment.
-  # The extension image (ghcr.io/qjoly/talosctl-oidc) is for Talos system extensions only.
+  # The extension image (ghcr.io/qjoly/talosctl-oidc-talos-ext) is for Talos system extensions only.
   repository: ghcr.io/qjoly/talosctl-oidc-server
   pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.

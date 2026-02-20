@@ -12,7 +12,7 @@ helm install talosctl-oidc ./charts/talosctl-oidc --namespace talos-system --cre
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `image.repository` | Image repository | `ghcr.io/qjoly/talosctl-oidc` |
+| `image.repository` | Image repository | `ghcr.io/qjoly/talosctl-oidc-server` |
 | `image.tag` | Image tag | `latest` |
 | `config.issuerUrl` | OIDC Issuer URL | `""` |
 | `config.clientId` | OIDC Client ID | `""` |

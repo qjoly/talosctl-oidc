@@ -156,7 +156,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-talos-ext
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -284,7 +284,7 @@ jobs:
           else
             TAG="dev"
           fi
-          EXTENSION_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}"
+          EXTENSION_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-talos-ext:${TAG}"
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           DIGEST=$(crane digest "${EXTENSION_IMAGE}" 2>/dev/null || true)
           echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
@@ -295,9 +295,9 @@ jobs:
           DIGEST="${{ steps.extension-digest.outputs.digest }}"
           
           if [ -n "${DIGEST}" ]; then
-            EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}@${DIGEST}"
+            EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-talos-ext:${TAG}@${DIGEST}"
           else
-            EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}"
+            EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-talos-ext:${TAG}"
           fi
           
           echo "Using extension reference: ${EXTENSION_REF}"
