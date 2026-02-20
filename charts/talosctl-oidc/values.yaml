@@ -84,6 +84,22 @@ tolerations: []
 
 affinity: {}
 
+# Extra volumes to add to the pod.
+# Example:
+#   extraVolumes:
+#     - name: my-config
+#       configMap:
+#         name: my-configmap
+extraVolumes: []
+
+# Extra volume mounts to add to the talosctl-oidc container.
+# Example:
+#   extraVolumeMounts:
+#     - name: my-config
+#       mountPath: /etc/my-config
+#       readOnly: true
+extraVolumeMounts: []
+
 # Application Configuration
 config:
   # TALOSCTL_OIDC_INSECURE

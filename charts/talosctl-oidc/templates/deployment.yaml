@@ -133,6 +133,9 @@ spec:
               mountPath: "/etc/talos"
               readOnly: true
             {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
@@ -144,6 +147,9 @@ spec:
         - name: talos-ca
           secret:
             secretName: {{ default (printf "%s-ca" (include "talosctl-oidc.fullname" .)) .Values.talos.caSecretName }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
       {{- if not .Values.talos.apiAccess.enabled }}
       {{- with .Values.nodeSelector }}
