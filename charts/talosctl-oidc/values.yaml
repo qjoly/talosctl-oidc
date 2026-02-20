@@ -1,0 +1,164 @@
+# Default values for talosctl-oidc.
+
+image:
+  repository: ghcr.io/qjoly/talosctl-oidc
+  pullPolicy: Always
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "pr-69"
+  # If using the provided Dockerfile's 'extension' stage image, the binary is at:
+  # command: ["/rootfs/usr/local/lib/containers/talosctl-oidc/talosctl-oidc"]
+  # If using a standard build (like the 'builder' stage), the binary is likely at:
+  # command: ["/talosctl-oidc"]
+  # Default matches the extension stage image published via the Dockerfile:
+  command: ["/rootfs/usr/local/lib/containers/talosctl-oidc/talosctl-oidc"]
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  {}
+  # fsGroup: 2000
+
+securityContext:
+  {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 8443
+  targetPort: 8443
+
+ingress:
+  enabled: false
+  className: ""
+  annotations:
+    {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+  #  - secretName: chart-example-tls
+  #    hosts:
+  #      - chart-example.local
+
+resources:
+  {}
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Application Configuration
+config:
+  # TALOSCTL_OIDC_INSECURE
+  # If true, the server listens on HTTP.
+  # If false, the server listens on HTTPS (using provided certs or self-signed).
+  # If ingress is enabled with TLS, this should likely be true.
+  insecure: false
+
+  # TALOSCTL_OIDC_ISSUER_URL (Required)
+  issuerUrl: "https://oidc.home.une-tasse-de.cafe/application/o/talos-oidc"
+
+  # TALOSCTL_OIDC_CLIENT_ID (Required)
+  clientId: "Mh3sbRbUpgPKKH0PUJceQ3l42wmkkJjmlGfgkEDz"
+
+  # TALOSCTL_OIDC_CLIENT_SECRET (Optional)
+  clientSecret: ""
+
+  # Use an existing secret for clientSecret and adminToken
+  # keys must be 'client-secret' and 'admin-token'
+  existingSecret: ""
+
+  # TALOSCTL_OIDC_ENDPOINTS (Required)
+  # List of Talos node endpoints
+  endpoints:
+    - 192.168.0.42
+
+  # TALOSCTL_OIDC_ROLES
+  roles:
+    - "os:admin"
+
+  # TALOSCTL_OIDC_CERT_TTL
+  certTTL: "1h"
+
+  # TALOSCTL_OIDC_ADMIN_TOKEN (Optional)
+  adminToken: ""
+
+  # TALOSCTL_OIDC_AUDIT_LOG
+  auditLog: "-"
+
+# Talos CA Configuration
+talos:
+  # -- Talos API Access from Kubernetes mode.
+  # When enabled, the chart creates a talos.dev/v1alpha1 ServiceAccount so that
+  # Talos itself provisions the CA secret into the pod via the projected volume at
+  # /var/run/secrets/talos.dev.
+  # Requires the kubernetesTalosAPIAccess feature to be enabled in the machine config.
+  # See: https://docs.siderolabs.com/kubernetes-guides/advanced-guides/talos-api-access-from-k8s/
+  # When this is enabled, caSecretName / caCert / caKey / caCertData / caKeyData are ignored.
+  apiAccess:
+    enabled: true
+    # Talos roles to request for the ServiceAccount (must be allowed in machineconfig)
+    roles:
+      - "os:admin"
+
+  # Name of an existing secret containing the Talos CA cert and key.
+  # Leave empty to have the chart create the secret from caCert/caKey below.
+  # Keys inside the secret must match caSecretKeys below.
+  caSecretName: ""
+
+  # Keys inside the secret.
+  # Defaults match manually-created secrets (talos-ca.crt / talos-ca.key).
+  caSecretKeys:
+    cert: "talos-ca.crt"
+    key: "talos-ca.key"
+
+  # Inline CA contents as file paths — the chart creates a Secret from these values
+  # and mounts it into the pod as files.
+  # Not recommended for production GitOps repositories; prefer caCertData/caKeyData
+  # via an external secret manager or existingSecret.
+  caCert: ""
+  caKey: ""
+
+  # Inline CA PEM content passed directly as environment variables (no file mount).
+  # The chart stores these in a Secret and injects them via TALOSCTL_OIDC_CA_CERT_DATA
+  # and TALOSCTL_OIDC_CA_KEY_DATA. Takes precedence over caCert/caKey when set.
+  # Ignored when apiAccess.enabled=true or caSecretName is set.
+  caCertData: ""
+  caKeyData: ""
