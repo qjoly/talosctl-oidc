@@ -143,8 +143,11 @@ func ValidateIDToken(rawToken string, jwks *JWKS, expectedIssuer, expectedAudien
 	}
 
 	// Validate issuer.
+	// Normalize both sides by trimming trailing slashes: some providers (e.g. Authentik)
+	// include a trailing slash in the token's iss claim even when the configured issuer URL
+	// does not have one (or vice-versa). The OIDC spec treats these as equivalent.
 	iss, _ := claims["iss"].(string)
-	if iss != expectedIssuer {
+	if strings.TrimSuffix(iss, "/") != strings.TrimSuffix(expectedIssuer, "/") {
 		return nil, fmt.Errorf("issuer mismatch: got %q, expected %q", iss, expectedIssuer)
 	}
 
