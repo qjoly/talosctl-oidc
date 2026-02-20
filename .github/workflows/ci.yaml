@@ -137,11 +137,46 @@ jobs:
           done
 
   # -------------------------------------------------------------------
+  # Package and push the Helm chart to GHCR OCI with pr-<number> tag
+  # -------------------------------------------------------------------
+  helm-chart:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Compute PR tag
+        id: tag
+        run: echo "tag=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Log in to GHCR (Helm)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login ${{ env.REGISTRY }} \
+              --username ${{ github.actor }} \
+              --password-stdin
+
+      - name: Package and push Helm chart
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          # Override chart version and appVersion with the PR tag
+          helm package charts/talosctl-oidc/ \
+            --version "0.0.0-${TAG}" \
+            --app-version "${TAG}"
+          helm push talosctl-oidc-0.0.0-${TAG}.tgz \
+            oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+
+  # -------------------------------------------------------------------
   # Post a comment on the PR with testing instructions
   # -------------------------------------------------------------------
   pr-comment:
     runs-on: ubuntu-latest
-    needs: installer-image
+    needs: [installer-image, helm-chart]
     steps:
       - name: Find existing comment
         uses: peter-evans/find-comment@v4
@@ -166,11 +201,27 @@ jobs:
             |-------|-----|
             | Extension | `ghcr.io/${{ github.repository }}:${{ needs.installer-image.outputs.tag }}` |
             | Installer | `ghcr.io/${{ github.repository }}-installer:${{ needs.installer-image.outputs.tag }}` |
+            | Helm chart | `oci://ghcr.io/${{ github.repository_owner }}/charts/talosctl-oidc:0.0.0-${{ needs.installer-image.outputs.tag }}` |
 
             ### Upgrade a Talos node with this PR
 
             ```bash
             talosctl upgrade --image ghcr.io/${{ github.repository }}-installer:${{ needs.installer-image.outputs.tag }}
+            ```
+
+            ### Deploy on Kubernetes with Helm
+
+            ```bash
+            helm install talosctl-oidc \
+              oci://ghcr.io/${{ github.repository_owner }}/charts/talosctl-oidc \
+              --version 0.0.0-${{ needs.installer-image.outputs.tag }} \
+              --namespace talos-system --create-namespace \
+              --set talos.apiAccess.enabled=false \
+              --set-string "talos.caCertData=$(cat talos-ca.crt)" \
+              --set-string "talos.caKeyData=$(cat talos-ca.key)" \
+              --set config.issuerUrl=https://your-oidc-provider/ \
+              --set config.clientId=your-client-id \
+              --set "config.endpoints={10.0.0.1}"
             ```
 
             ### Run the server locally (from binary)

@@ -138,6 +138,69 @@ jobs:
           cache-to: type=gha,mode=max
 
   # -------------------------------------------------------------------
+  # Package and push the Helm chart to GHCR OCI
+  # Tags: <version>, <major>.<minor>, and latest (on real semver tags only)
+  # -------------------------------------------------------------------
+  helm-chart:
+    runs-on: ubuntu-latest
+    needs: extension-image
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Compute chart version and tags
+        id: vars
+        run: |
+          REF="${GITHUB_REF_NAME}"
+          # Strip leading 'v' for semver chart version (Helm requires plain semver)
+          if [[ "${REF}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
+            CHART_VERSION="${BASH_REMATCH[1]}"
+            APP_VERSION="${REF}"
+            IS_RELEASE="true"
+          else
+            # workflow_dispatch without a tag → dev build
+            CHART_VERSION="0.0.0-dev"
+            APP_VERSION="dev"
+            IS_RELEASE="false"
+          fi
+          echo "chart_version=${CHART_VERSION}" >> $GITHUB_OUTPUT
+          echo "app_version=${APP_VERSION}"     >> $GITHUB_OUTPUT
+          echo "is_release=${IS_RELEASE}"       >> $GITHUB_OUTPUT
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Log in to GHCR (Helm)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login ${{ env.REGISTRY }} \
+              --username ${{ github.actor }} \
+              --password-stdin
+
+      - name: Package Helm chart
+        run: |
+          helm package charts/talosctl-oidc/ \
+            --version "${{ steps.vars.outputs.chart_version }}" \
+            --app-version "${{ steps.vars.outputs.app_version }}"
+
+      - name: Push versioned chart
+        run: |
+          helm push talosctl-oidc-${{ steps.vars.outputs.chart_version }}.tgz \
+            oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+
+      - name: Re-tag chart as latest
+        if: steps.vars.outputs.is_release == 'true'
+        run: |
+          # Pull the manifest we just pushed, re-tag it as :latest
+          # crane is not available here; use ORAS (ships with the runner) or a second helm push trick.
+          # Helm OCI does not support re-tagging natively, so we use crane.
+          curl -sL https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_x86_64.tar.gz \
+            | tar -xz crane
+          ./crane tag \
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/talosctl-oidc:${{ steps.vars.outputs.chart_version }} \
+            latest
+
+  # -------------------------------------------------------------------
   # Build and push the Talos installer image with the extension baked in
   # -------------------------------------------------------------------
   installer-image:
