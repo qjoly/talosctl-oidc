@@ -21,8 +21,10 @@ COPY --from=builder /talosctl-oidc /rootfs/usr/local/lib/containers/talosctl-oid
 
 # Include the system CA bundle so the binary can verify TLS certificates
 # (e.g. when fetching the OIDC discovery document from an HTTPS endpoint).
-# The builder image (golang:alpine) provides this at the standard location.
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+# Must live under /rootfs/ — Talos extensions may only contain files under
+# allowed top-level dirs (rootfs, lib, …); a bare /etc at the image root is
+# rejected by the imager with "unexpected file".
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ca-certificates.crt
 
 # Extension service configuration
 COPY talosctl-oidc.yaml /rootfs/usr/local/etc/containers/talosctl-oidc.yaml
