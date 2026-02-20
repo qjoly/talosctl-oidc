@@ -13,6 +13,12 @@ import (
 	"github.com/qjoly/talosctl-oidc/pkg/oidc"
 )
 
+func debug(format string, v ...interface{}) {
+	if os.Getenv("DEBUG") != "" {
+		log.Printf("[DEBUG] "+format, v...)
+	}
+}
+
 const (
 	serviceName = "talosctl-oidc"
 )
@@ -20,39 +26,93 @@ const (
 // Store saves the OIDC token to the system keychain, falling back to a file
 // if the keychain is unavailable or the data is too large.
 func Store(contextName string, token *oidc.StoredToken) error {
+	debug("Storing token for context: %s", contextName)
 	data, err := json.Marshal(token)
 	if err != nil {
 		return fmt.Errorf("marshaling token: %w", err)
 	}
 
+	debug("Attempting to store in keychain (size: %d bytes)", len(data))
 	if err := keyring.Set(serviceName, contextName, string(data)); err != nil {
 		log.Printf("Keychain unavailable (%v), using file-based token cache", err)
 		return fileStore(contextName, token)
 	}
+	debug("Successfully stored in keychain")
 
 	return nil
 }
 
-// Retrieve loads the OIDC token from the system keychain, falling back to a
-// file if the keychain is unavailable.
+// Retrieve loads the OIDC token from the system keychain and the file cache,
+// always checking both sources and returning the best token: one with a
+// refresh token is preferred; if both (or neither) have a refresh token, the
+// one that expires later wins.
 func Retrieve(contextName string) (*oidc.StoredToken, error) {
+	debug("Retrieving token for context: %s", contextName)
+
+	var keychainToken *oidc.StoredToken
 	data, err := keyring.Get(serviceName, contextName)
 	if err == nil {
-		var token oidc.StoredToken
-		if err := json.Unmarshal([]byte(data), &token); err != nil {
-			return nil, fmt.Errorf("unmarshaling token: %w", err)
+		var t oidc.StoredToken
+		if jsonErr := json.Unmarshal([]byte(data), &t); jsonErr != nil {
+			debug("Keychain token unmarshal failed: %v", jsonErr)
+		} else {
+			keychainToken = &t
+			debug("Retrieved token from keychain (refresh_token present: %v, expires: %v)",
+				keychainToken.RefreshToken != "", keychainToken.ExpiresAt)
 		}
-		return &token, nil
+	} else {
+		debug("Keychain retrieval failed: %v", err)
 	}
 
-	if err != keyring.ErrNotFound {
-		// Keychain error (not just "key missing") — try file fallback.
-		return fileRetrieve(contextName)
+	fileToken, fileErr := fileRetrieve(contextName)
+	if fileErr != nil {
+		debug("File cache retrieval failed: %v", fileErr)
+	} else if fileToken != nil {
+		debug("Retrieved token from file cache (refresh_token present: %v, expires: %v)",
+			fileToken.RefreshToken != "", fileToken.ExpiresAt)
 	}
 
-	// Key not found in keychain — also check file fallback (may have been
-	// stored there on a previous run where keychain was too small).
-	return fileRetrieve(contextName)
+	best := bestToken(keychainToken, fileToken)
+	switch {
+	case best == nil:
+		debug("No token found in either keychain or file cache")
+	case best == keychainToken && fileToken == nil:
+		debug("Using keychain token (no file token)")
+	case best == fileToken && keychainToken == nil:
+		debug("Using file token (no keychain token)")
+	case best == fileToken:
+		debug("Preferring file token over keychain token (has refresh token or expires later)")
+	default:
+		debug("Preferring keychain token over file token (has refresh token or expires later)")
+	}
+
+	return best, nil
+}
+
+// bestToken returns the better of two tokens: the one with a refresh token is
+// preferred; if both (or neither) have one, the one that expires later wins.
+// A nil token is always worse than a non-nil one.
+func bestToken(a, b *oidc.StoredToken) *oidc.StoredToken {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	// Prefer the one with a refresh token.
+	aHas := a.RefreshToken != ""
+	bHas := b.RefreshToken != ""
+	if aHas && !bHas {
+		return a
+	}
+	if bHas && !aHas {
+		return b
+	}
+	// Both or neither have a refresh token — prefer the one expiring later.
+	if b.ExpiresAt.After(a.ExpiresAt) {
+		return b
+	}
+	return a
 }
 
 // Delete removes the OIDC token from the system keychain and the file cache.

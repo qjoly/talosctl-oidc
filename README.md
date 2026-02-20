@@ -250,6 +250,7 @@ talosctl-oidc serve
 | `TALOSCTL_OIDC_DATA_DIR` | No | | Directory to persist self-signed TLS certs across restarts |
 | `TALOSCTL_OIDC_AUDIT_LOG` | No | stdout | Path to audit log file (`-` for stdout) |
 | `TALOSCTL_OIDC_ADMIN_TOKEN` | No | | Bearer token to protect `/admin/*` endpoints (required to enable admin API) |
+| `DEBUG` | No | | Set to any value to enable detailed debug logging |
 
 #### TLS Modes
 
@@ -616,6 +617,20 @@ Expired certificates are automatically pruned from the list on each request.
 - **State parameter** is used for CSRF protection during the OIDC flow
 - **Admin API is opt-in**: The `/admin/*` endpoints are disabled by default and require setting `TALOSCTL_OIDC_ADMIN_TOKEN`. The token is compared using constant-time comparison to prevent timing attacks
 - **Audit logging** provides a tamper-evident record of all authentication events for compliance and security monitoring
+
+## Debugging
+
+You can enable detailed internal tracing for both the client and the server by setting the `DEBUG` environment variable to any non-empty value.
+
+```bash
+# Debug client-side login flow
+DEBUG=1 talosctl-oidc login --provider ...
+
+# Debug server-side exchange flow
+DEBUG=1 talosctl-oidc serve
+```
+
+Debug logs include information about OIDC discovery, PKCE challenges, token response fields, keychain/file storage operations, and certificate expiry calculations.
 
 ## Troubleshooting
 

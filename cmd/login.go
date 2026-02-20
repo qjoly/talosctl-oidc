@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -22,6 +23,12 @@ import (
 	"github.com/qjoly/talosctl-oidc/pkg/server"
 	"github.com/qjoly/talosctl-oidc/pkg/talosconfig"
 )
+
+func debug(format string, v ...interface{}) {
+	if os.Getenv("DEBUG") != "" {
+		log.Printf("[DEBUG] "+format, v...)
+	}
+}
 
 var loginFlags struct {
 	provider     string
@@ -70,42 +77,54 @@ func init() {
 }
 
 func runLogin(cmd *cobra.Command, args []string) error {
+	debug("Login command started")
 	talosconfigPath := loginFlags.talosconfig
 	if talosconfigPath == "" {
 		talosconfigPath = talosconfig.DefaultPath()
 	}
+	debug("Using talosconfig path: %s", talosconfigPath)
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 
+		debug("Checking existing certificate for context: %s", loginFlags.contextName)
 		// Check if current certificate is still valid.
 		cfg, err := talosconfig.Load(talosconfigPath)
 		if err == nil {
 			if tctx, ok := cfg.Contexts[loginFlags.contextName]; ok {
-				if !tctx.IsCertificateExpired(5 * time.Minute) {
-					expiry, _ := tctx.GetCertificateExpiry()
-					if !loginFlags.watch {
-						fmt.Printf("Talos certificate for context %q is still valid until %s (no renewal needed).\n",
-							loginFlags.contextName, expiry.Format(time.RFC3339))
+				expiry, err := tctx.GetCertificateExpiry()
+				if err == nil {
+					debug("Current certificate expiry: %s", expiry.Format(time.RFC3339))
+					if !tctx.IsCertificateExpired(5 * time.Minute) {
+						if !loginFlags.watch {
+							fmt.Printf("Talos certificate for context %q is still valid until %s (no renewal needed).\n",
+								loginFlags.contextName, expiry.Format(time.RFC3339))
+							cancel()
+							return nil
+						}
+						// If watching, sleep until we need to renew.
+						renewAt := expiry.Add(-5 * time.Minute)
+						waitDur := time.Until(renewAt)
+						debug("Certificate still valid, next renewal at %s (waiting %s)", renewAt.Format(time.RFC3339), waitDur)
+						if waitDur > 1*time.Minute {
+							waitDur = 1 * time.Minute
+						}
+						if waitDur < 0 {
+							waitDur = 0
+						}
 						cancel()
-						return nil
+						time.Sleep(waitDur)
+						continue
 					}
-					// If watching, sleep until we need to renew.
-					// Check every minute or when we are 5 minutes before expiry.
-					renewAt := expiry.Add(-5 * time.Minute)
-					waitDur := time.Until(renewAt)
-					if waitDur > 1*time.Minute {
-						waitDur = 1 * time.Minute
-					}
-					if waitDur < 0 {
-						waitDur = 0
-					}
-					cancel()
-					time.Sleep(waitDur)
-					continue
+					fmt.Printf("Talos certificate for context %q is expired or expiring soon, renewing...\n", loginFlags.contextName)
+				} else {
+					debug("Could not parse certificate expiry: %v", err)
 				}
-				fmt.Printf("Talos certificate for context %q is expired or expiring soon, renewing...\n", loginFlags.contextName)
+			} else {
+				debug("Context %q not found in talosconfig", loginFlags.contextName)
 			}
+		} else {
+			debug("Could not load talosconfig: %v", err)
 		}
 
 		// Validate TLS configuration.
@@ -237,18 +256,25 @@ func obtainIDToken(ctx context.Context) (string, error) {
 	// Check for cached token in keychain.
 	storedToken, err := keychain.Retrieve(loginFlags.contextName)
 	if err != nil {
-		fmt.Printf("Warning: could not check keychain: %v\n", err)
+		fmt.Printf("Warning: could not check keychain/file: %v\n", err)
 	}
 
 	// If we have a valid cached token with an ID token, use it.
-	if storedToken != nil && !storedToken.IsExpired() && storedToken.IDToken != "" {
-		fmt.Println("Using cached OIDC token (still valid).")
-		return storedToken.IDToken, nil
+	if storedToken != nil {
+		if !storedToken.IsExpired() && storedToken.IDToken != "" {
+			fmt.Println("Using cached OIDC token (still valid).")
+			return storedToken.IDToken, nil
+		}
+		if storedToken.IsExpired() {
+			fmt.Printf("Cached OIDC token expired at %s\n", storedToken.ExpiresAt.Format(time.RFC3339))
+		}
+	} else {
+		fmt.Println("No cached OIDC token found.")
 	}
 
 	// Try to refresh if we have a refresh token.
 	if storedToken != nil && storedToken.HasRefreshToken() {
-		fmt.Println("Token expired, attempting refresh...")
+		fmt.Println("Token expired, attempting refresh using refresh token...")
 
 		provider, err := oidc.Discover(ctx, storedToken.Issuer)
 		if err != nil {
@@ -266,6 +292,10 @@ func obtainIDToken(ctx context.Context) (string, error) {
 					Issuer:       storedToken.Issuer,
 					ClientID:     storedToken.ClientID,
 				}
+				// Default expiry if missing from response.
+				if tokenResp.ExpiresIn == 0 {
+					refreshedToken.ExpiresAt = time.Now().Add(1 * time.Hour)
+				}
 				if refreshedToken.RefreshToken == "" {
 					refreshedToken.RefreshToken = storedToken.RefreshToken
 				}
@@ -282,6 +312,8 @@ func obtainIDToken(ctx context.Context) (string, error) {
 				fmt.Println("Refreshed token has no ID token, performing full authentication...")
 			}
 		}
+	} else if storedToken != nil && !storedToken.HasRefreshToken() {
+		fmt.Println("Cached token has no refresh token.")
 	}
 
 	// Full authentication flow.
@@ -309,6 +341,15 @@ func obtainIDToken(ctx context.Context) (string, error) {
 
 	if storedToken.IDToken == "" {
 		return "", fmt.Errorf("OIDC provider did not return an ID token; ensure 'openid' scope is requested")
+	}
+
+	if storedToken.RefreshToken == "" {
+		fmt.Printf("Warning: OIDC provider did not return a refresh token.\n")
+		debug("Requested scopes: %v", authCfg.Scopes)
+		// We don't have the granted scopes here easily without changing the return type of Authenticate,
+		// but the debug logs in pkg/oidc will show it now.
+		fmt.Printf("Without a refresh token, automatic background renewal is not possible.\n")
+		fmt.Printf("Ensure your OIDC provider supports 'offline_access' and it is enabled for this client.\n")
 	}
 
 	return storedToken.IDToken, nil

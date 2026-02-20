@@ -26,6 +26,7 @@ type ProviderConfig struct {
 // Discover fetches OIDC provider metadata from the well-known endpoint.
 func Discover(ctx context.Context, issuerURL string) (*ProviderConfig, error) {
 	wellKnown := strings.TrimSuffix(issuerURL, "/") + "/.well-known/openid-configuration"
+	debug("Fetching OIDC discovery from %s", wellKnown)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnown, nil)
 	if err != nil {
@@ -46,6 +47,7 @@ func Discover(ctx context.Context, issuerURL string) (*ProviderConfig, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
 		return nil, fmt.Errorf("decoding OIDC discovery document: %w", err)
 	}
+	debug("Discovery successful: issuer=%s, token_endpoint=%s", config.Issuer, config.TokenEndpoint)
 
 	if config.AuthorizationEndpoint == "" {
 		return nil, fmt.Errorf("OIDC discovery: authorization_endpoint is empty")
@@ -64,6 +66,7 @@ type TokenResponse struct {
 	ExpiresIn    int    `json:"expires_in"`
 	RefreshToken string `json:"refresh_token"`
 	IDToken      string `json:"id_token"`
+	Scope        string `json:"scope"`
 }
 
 // StoredToken is what we persist in the keychain.
@@ -122,6 +125,8 @@ func BuildAuthorizationURL(provider *ProviderConfig, clientID string, redirectUR
 		"state":                 {state},
 		"code_challenge":        {pkce.Challenge},
 		"code_challenge_method": {pkce.Method},
+		"access_type":           {"offline"}, // Required by some providers (like Google) for refresh tokens
+		"prompt":                {"consent"}, // Often required to ensure offline_access is granted
 	}
 
 	return provider.AuthorizationEndpoint + "?" + params.Encode()
@@ -129,6 +134,7 @@ func BuildAuthorizationURL(provider *ProviderConfig, clientID string, redirectUR
 
 // ExchangeCode exchanges an authorization code for tokens.
 func ExchangeCode(ctx context.Context, provider *ProviderConfig, clientID, clientSecret, code, redirectURI string, pkce *PKCEChallenge) (*TokenResponse, error) {
+	debug("Exchanging code at %s for client_id=%s", provider.TokenEndpoint, clientID)
 	data := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
@@ -138,6 +144,7 @@ func ExchangeCode(ctx context.Context, provider *ProviderConfig, clientID, clien
 	}
 
 	if clientSecret != "" {
+		debug("Using client_secret for exchange")
 		data.Set("client_secret", clientSecret)
 	}
 
@@ -155,19 +162,29 @@ func ExchangeCode(ctx context.Context, provider *ProviderConfig, clientID, clien
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		debug("Token exchange failed: status=%d, body=%s", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("token endpoint returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var tokenResp TokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading token response: %w", err)
+	}
+	debug("Raw token response: %s", string(body))
+
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		return nil, fmt.Errorf("decoding token response: %w", err)
 	}
+	debug("Token response: access_token=%v, refresh_token=%v, id_token=%v, expires_in=%d, scope=%q",
+		tokenResp.AccessToken != "", tokenResp.RefreshToken != "", tokenResp.IDToken != "", tokenResp.ExpiresIn, tokenResp.Scope)
 
 	return &tokenResp, nil
 }
 
 // RefreshAccessToken uses a refresh token to obtain new tokens.
 func RefreshAccessToken(ctx context.Context, provider *ProviderConfig, clientID, clientSecret, refreshToken string, scopes []string) (*TokenResponse, error) {
+	debug("Refreshing token at %s for client_id=%s, scopes=%v", provider.TokenEndpoint, clientID, scopes)
 	data := url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
@@ -175,10 +192,12 @@ func RefreshAccessToken(ctx context.Context, provider *ProviderConfig, clientID,
 	}
 
 	if len(scopes) > 0 {
+		debug("Setting requested scopes for refresh: %v", scopes)
 		data.Set("scope", strings.Join(scopes, " "))
 	}
 
 	if clientSecret != "" {
+		debug("Using client_secret for refresh")
 		data.Set("client_secret", clientSecret)
 	}
 
@@ -196,13 +215,22 @@ func RefreshAccessToken(ctx context.Context, provider *ProviderConfig, clientID,
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		debug("Token refresh failed: status=%d, body=%s", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("token refresh returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var tokenResp TokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading refresh response: %w", err)
+	}
+	debug("Raw refresh response: %s", string(body))
+
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		return nil, fmt.Errorf("decoding refresh response: %w", err)
 	}
+	debug("Refresh response: access_token=%v, refresh_token=%v, id_token=%v, expires_in=%d, scope=%q",
+		tokenResp.AccessToken != "", tokenResp.RefreshToken != "", tokenResp.IDToken != "", tokenResp.ExpiresIn, tokenResp.Scope)
 
 	return &tokenResp, nil
 }
