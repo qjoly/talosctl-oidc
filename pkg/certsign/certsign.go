@@ -68,14 +68,32 @@ func LoadCAFromTalosConfig(_ string) (*CA, error) {
 
 // ParseCA parses PEM-encoded CA certificate and private key bytes.
 func ParseCA(certPEM, keyPEM []byte) (*CA, error) {
-	certBlock, _ := pem.Decode(certPEM)
-	if certBlock == nil {
-		return nil, fmt.Errorf("failed to decode CA certificate PEM")
+	var cert *x509.Certificate
+
+	rest := certPEM
+	for len(rest) > 0 {
+		block, remaining := pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type == "CERTIFICATE" {
+			c, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				return nil, fmt.Errorf("parsing CA certificate: %w", err)
+			}
+			if c.IsCA {
+				cert = c
+				break
+			}
+			if cert == nil {
+				cert = c
+			}
+		}
+		rest = remaining
 	}
 
-	cert, err := x509.ParseCertificate(certBlock.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parsing CA certificate: %w", err)
+	if cert == nil {
+		return nil, fmt.Errorf("failed to decode CA certificate PEM")
 	}
 
 	if !cert.IsCA {
