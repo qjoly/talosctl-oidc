@@ -374,7 +374,7 @@ func TestResolvedConfig_ParseCertTTL(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{"empty defaults to 1h", "", "1h0m0s", false},
+		{"empty defaults to 5m0s", "", "5m0s", false},
 		{"valid 2h", "2h", "2h0m0s", false},
 		{"valid 30m", "30m", "30m0s", false},
 		{"invalid", "xyz", "", true},
