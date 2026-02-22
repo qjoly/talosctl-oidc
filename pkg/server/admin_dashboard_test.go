@@ -376,3 +376,171 @@ func TestAdminDashboardNoTokenConfigured(t *testing.T) {
 		t.Errorf("expected status %d, got %d", http.StatusForbidden, rec.Code)
 	}
 }
+
+func TestBruteForceProtection(t *testing.T) {
+	logger, err := audit.NewLogger("")
+	if err != nil {
+		t.Fatalf("failed to create audit logger: %v", err)
+	}
+	tracker := admin.NewTracker(logger)
+
+	cfg := Config{
+		ListenAddr:   ":8080",
+		AdminToken:   "correct-token",
+		AdminTracker: tracker,
+	}
+
+	srv := New(cfg)
+
+	// Simulate failed login attempts from same IP
+	clientIP := "192.168.1.100"
+	for i := 0; i < maxLoginAttempts; i++ {
+		formData := strings.NewReader("token=wrong-token")
+		req := httptest.NewRequest(http.MethodPost, "/admin/login", formData)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = clientIP + ":12345"
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("attempt %d: expected status %d, got %d", i+1, http.StatusUnauthorized, rec.Code)
+		}
+	}
+
+	// Next attempt should be rate limited (429)
+	formData := strings.NewReader("token=wrong-token")
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", formData)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = clientIP + ":12345"
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("expected status %d after exceeding max attempts, got %d", http.StatusTooManyRequests, rec.Code)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Too many failed attempts") {
+		t.Error("expected body to contain rate limit message")
+	}
+}
+
+func TestBruteForceProtectionResetAfterSuccess(t *testing.T) {
+	logger, err := audit.NewLogger("")
+	if err != nil {
+		t.Fatalf("failed to create audit logger: %v", err)
+	}
+	tracker := admin.NewTracker(logger)
+
+	cfg := Config{
+		ListenAddr:   ":8080",
+		AdminToken:   "correct-token",
+		AdminTracker: tracker,
+	}
+
+	srv := New(cfg)
+
+	clientIP := "192.168.1.101"
+
+	// Make a few failed attempts
+	for i := 0; i < 3; i++ {
+		formData := strings.NewReader("token=wrong-token")
+		req := httptest.NewRequest(http.MethodPost, "/admin/login", formData)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = clientIP + ":12345"
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("attempt %d: expected status %d, got %d", i+1, http.StatusUnauthorized, rec.Code)
+		}
+	}
+
+	// Now login successfully - should reset the counter
+	formData := strings.NewReader("token=correct-token")
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", formData)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = clientIP + ":12345"
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Errorf("expected redirect status %d, got %d", http.StatusSeeOther, rec.Code)
+	}
+
+	// Make more failed attempts - should start from zero again
+	for i := 0; i < maxLoginAttempts; i++ {
+		formData := strings.NewReader("token=wrong-token")
+		req := httptest.NewRequest(http.MethodPost, "/admin/login", formData)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = clientIP + ":12345"
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("post-success attempt %d: expected status %d, got %d", i+1, http.StatusUnauthorized, rec.Code)
+		}
+	}
+
+	// Should still be able to get rate limited after new failures
+	formData = strings.NewReader("token=wrong-token")
+	req = httptest.NewRequest(http.MethodPost, "/admin/login", formData)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = clientIP + ":12345"
+	rec = httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("expected rate limit status %d, got %d", http.StatusTooManyRequests, rec.Code)
+	}
+}
+
+func TestBruteForceProtectionDifferentIPs(t *testing.T) {
+	logger, err := audit.NewLogger("")
+	if err != nil {
+		t.Fatalf("failed to create audit logger: %v", err)
+	}
+	tracker := admin.NewTracker(logger)
+
+	cfg := Config{
+		ListenAddr:   ":8080",
+		AdminToken:   "correct-token",
+		AdminTracker: tracker,
+	}
+
+	srv := New(cfg)
+
+	// IP1 makes max attempts
+	for i := 0; i < maxLoginAttempts; i++ {
+		formData := strings.NewReader("token=wrong-token")
+		req := httptest.NewRequest(http.MethodPost, "/admin/login", formData)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = "10.0.0.1:12345"
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+	}
+
+	// IP1 is now locked out
+	formData := strings.NewReader("token=wrong-token")
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", formData)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "10.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("IP1 should be rate limited, got status %d", rec.Code)
+	}
+
+	// IP2 should still be able to attempt login
+	formData = strings.NewReader("token=wrong-token")
+	req = httptest.NewRequest(http.MethodPost, "/admin/login", formData)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "10.0.0.2:12345"
+	rec = httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("IP2 should not be affected by IP1's rate limit, got status %d", rec.Code)
+	}
+}

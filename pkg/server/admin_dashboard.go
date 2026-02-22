@@ -5,7 +5,9 @@ import (
 	"crypto/subtle"
 	_ "embed"
 	"encoding/base64"
+	"fmt"
 	"html/template"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -19,6 +21,13 @@ var adminHTMLTemplate string
 
 // sessionTimeout defines how long a session remains valid
 const sessionTimeout = 24 * time.Hour
+
+// brute force protection constants
+const (
+	maxLoginAttempts    = 5                // max failed attempts before lockout
+	lockoutDuration     = 15 * time.Minute // how long to lock out
+	failedAttemptWindow = 15 * time.Minute // window for counting failed attempts
+)
 
 // AdminPageData holds the data for the admin dashboard template.
 type AdminPageData struct {
@@ -108,6 +117,126 @@ func (s *sessionStore) delete(token string) {
 	delete(s.sessions, token)
 }
 
+// loginAttempt tracks failed login attempts for an IP
+type loginAttempt struct {
+	count     int
+	lastFail  time.Time
+	lockedOut bool
+	lockoutAt time.Time
+}
+
+// bruteForceProtector tracks failed login attempts per IP
+type bruteForceProtector struct {
+	mu       sync.RWMutex
+	attempts map[string]*loginAttempt
+}
+
+// newBruteForceProtector creates a new brute force protector
+func newBruteForceProtector() *bruteForceProtector {
+	return &bruteForceProtector{
+		attempts: make(map[string]*loginAttempt),
+	}
+}
+
+// getClientIP extracts the real client IP from the request
+func getClientIP(r *http.Request) string {
+	// Check X-Forwarded-For header first (for proxies)
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// Take the first IP if there are multiple
+		if idx := strings.Index(xff, ","); idx != -1 {
+			xff = strings.TrimSpace(xff[:idx])
+		}
+		return xff
+	}
+
+	// Check X-Real-Ip header
+	if xri := r.Header.Get("X-Real-Ip"); xri != "" {
+		return xri
+	}
+
+	// Fall back to RemoteAddr
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// isLockedOut checks if the IP is currently locked out
+func (b *bruteForceProtector) isLockedOut(ip string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	attempt, exists := b.attempts[ip]
+	if !exists {
+		return false
+	}
+
+	// Check if lockout has expired
+	if attempt.lockedOut {
+		if time.Since(attempt.lockoutAt) > lockoutDuration {
+			// Lockout expired, reset
+			return false
+		}
+		return true
+	}
+
+	return false
+}
+
+// recordFailed records a failed login attempt
+func (b *bruteForceProtector) recordFailed(ip string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	attempt, exists := b.attempts[ip]
+	if !exists {
+		attempt = &loginAttempt{}
+		b.attempts[ip] = attempt
+	}
+
+	now := time.Now()
+
+	// Reset count if the window has passed
+	if now.Sub(attempt.lastFail) > failedAttemptWindow {
+		attempt.count = 0
+		attempt.lockedOut = false
+	}
+
+	attempt.count++
+	attempt.lastFail = now
+
+	// Check if we should lock out
+	if attempt.count >= maxLoginAttempts {
+		attempt.lockedOut = true
+		attempt.lockoutAt = now
+	}
+}
+
+// recordSuccess clears failed attempts for an IP after successful login
+func (b *bruteForceProtector) recordSuccess(ip string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.attempts, ip)
+}
+
+// getRemainingLockoutTime returns how long the IP is still locked out
+func (b *bruteForceProtector) getRemainingLockoutTime(ip string) time.Duration {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	attempt, exists := b.attempts[ip]
+	if !exists || !attempt.lockedOut {
+		return 0
+	}
+
+	remaining := lockoutDuration - time.Since(attempt.lockoutAt)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
 // cookieName is the name of the session cookie
 const cookieName = "talosctl_oidc_admin_session"
 
@@ -166,6 +295,30 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Initialize brute force protector if needed
+	if s.bruteForce == nil {
+		s.bruteForce = newBruteForceProtector()
+	}
+
+	// Get client IP
+	clientIP := getClientIP(r)
+
+	// Check if IP is locked out
+	if s.bruteForce.isLockedOut(clientIP) {
+		remaining := s.bruteForce.getRemainingLockoutTime(clientIP)
+		data := AdminPageData{
+			CurrentTime: time.Now().UTC(),
+			LoggedIn:    false,
+			Error:       fmt.Sprintf("Too many failed attempts. Please try again in %d minutes.", int(remaining.Minutes())+1),
+		}
+
+		tmpl, _ := template.New("admin").Parse(adminHTMLTemplate)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusTooManyRequests)
+		tmpl.Execute(w, data)
+		return
+	}
+
 	// Parse form data
 	if err := r.ParseForm(); err != nil {
 		http.Redirect(w, r, "/admin/", http.StatusSeeOther)
@@ -176,6 +329,9 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Validate token using constant-time comparison
 	if subtle.ConstantTimeCompare([]byte(submittedToken), []byte(s.cfg.AdminToken)) != 1 {
+		// Record failed attempt
+		s.bruteForce.recordFailed(clientIP)
+
 		// Invalid token - show error on login page
 		data := AdminPageData{
 			CurrentTime: time.Now().UTC(),
@@ -190,7 +346,10 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Token is valid - create session
+	// Token is valid - clear failed attempts
+	s.bruteForce.recordSuccess(clientIP)
+
+	// Create session
 	if s.adminSessions == nil {
 		s.adminSessions = newSessionStore()
 	}

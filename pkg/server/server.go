@@ -127,6 +127,9 @@ type Server struct {
 
 	// adminSessions tracks active web dashboard sessions
 	adminSessions *sessionStore
+
+	// bruteForce protects the login form from brute force attacks
+	bruteForce *bruteForceProtector
 }
 
 // New creates a new cert exchange server.
