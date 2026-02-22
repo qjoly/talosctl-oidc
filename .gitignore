@@ -4,5 +4,7 @@
 talos-admin.key
 talos-admin.crt
 talos-ca.crt
+temp/
+talos/
 patch-talosctl-oidc.yaml
 charts/**/values.dev.yaml
