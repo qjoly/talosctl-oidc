@@ -48,9 +48,10 @@ type FileConfig struct {
 	TalosConfig string `yaml:"talos_config"` // Path to talosconfig YAML file.
 
 	// OIDC configuration.
-	IssuerURL    string `yaml:"issuer_url"`    // OIDC issuer URL for token validation.
-	ClientID     string `yaml:"client_id"`     // Expected OIDC client ID / audience.
-	ClientSecret string `yaml:"client_secret"` // OIDC client secret (for HS256-signed tokens).
+	IssuerURL        string `yaml:"issuer_url"`         // OIDC issuer URL for token validation.
+	ClientID         string `yaml:"client_id"`          // Expected OIDC client ID / audience.
+	ClientSecret     string `yaml:"client_secret"`      // OIDC client secret (for HS256-signed tokens).
+	ClientSecretFile string `yaml:"client_secret_file"` // Path to file containing OIDC client secret.
 
 	// Server configuration.
 	Listen    string   `yaml:"listen"`    // Address to listen on (default: ":8443").
@@ -90,6 +91,7 @@ type ResolvedConfig struct {
 	IssuerURL         string
 	ClientID          string
 	ClientSecret      string
+	ClientSecretFile  string
 	Listen            string
 	Endpoints         []string
 	CertTTL           string
@@ -153,6 +155,7 @@ func Load(configPath string) (*ResolvedConfig, error) {
 	rc.IssuerURL = envOrDefault("TALOSCTL_OIDC_ISSUER_URL", fileCfg.IssuerURL)
 	rc.ClientID = envOrDefault("TALOSCTL_OIDC_CLIENT_ID", fileCfg.ClientID)
 	rc.ClientSecret = envOrDefault("TALOSCTL_OIDC_CLIENT_SECRET", fileCfg.ClientSecret)
+	rc.ClientSecretFile = envOrDefault("TALOSCTL_OIDC_CLIENT_SECRET_FILE", fileCfg.ClientSecretFile)
 	rc.Listen = envOrDefault("TALOSCTL_OIDC_LISTEN", fileCfg.Listen)
 	rc.CertTTL = envOrDefault("TALOSCTL_OIDC_CERT_TTL", fileCfg.CertTTL)
 	rc.TLSCert = envOrDefault("TALOSCTL_OIDC_TLS_CERT", fileCfg.TLSCert)
@@ -255,6 +258,20 @@ func (rc *ResolvedConfig) ApplyDefaults() {
 	if len(rc.Roles) == 0 && len(rc.RBAC.Rules) == 0 {
 		rc.Roles = []string{"os:admin"}
 	}
+}
+
+// LoadClientSecret reads the OIDC client secret from a file if configured.
+// This avoids exposing the secret in process arguments (visible via ps aux).
+func (rc *ResolvedConfig) LoadClientSecret() error {
+	if rc.ClientSecretFile == "" {
+		return nil
+	}
+	data, err := os.ReadFile(rc.ClientSecretFile)
+	if err != nil {
+		return fmt.Errorf("reading client secret file %s: %w", rc.ClientSecretFile, err)
+	}
+	rc.ClientSecret = strings.TrimSpace(string(data))
+	return nil
 }
 
 // ParseCertTTL parses the CertTTL string into a time.Duration.
