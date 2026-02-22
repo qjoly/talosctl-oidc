@@ -8,7 +8,7 @@ image:
   repository: ghcr.io/qjoly/talosctl-oidc-server
   pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
-  tag: ""
+  tag: "0.0.2-rc1"
   # Binary path in the server image:
   command: ["/talosctl-oidc"]
 

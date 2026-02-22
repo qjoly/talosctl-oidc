@@ -1,0 +1,8 @@
+machine:
+  features:
+    kubernetesTalosAPIAccess:
+      enabled: true
+      allowedRoles:
+        - os:admin # must include the roles talosctl-oidc will request
+      allowedKubernetesNamespaces:
+        - talos-system # namespace where you deploy the chart
