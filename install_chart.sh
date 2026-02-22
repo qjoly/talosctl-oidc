@@ -10,5 +10,5 @@ helm upgrade --install talosctl-oidc -n talos-system oci://ghcr.io/qjoly/charts/
   --set-file talos.caCertData=temp/talos-os-ca.crt \
   --set-file talos.caKeyData=temp/talos-os-ca.key \
   --set config.issuerUrl=https://oidc.home.une-tasse-de.cafe/application/o/talos-oidc/ \
-  --set config.clientId=Mh3sbRbUpgPKKH0PUJceQ3l42wmkkJjmlGfgkEDz \
+  --set config.clientId=talosctl_oidc \
   --set-json 'config.endpoints=["192.168.0.42"]'

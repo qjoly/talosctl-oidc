@@ -1,0 +1,28 @@
+# This file defines an ExtensionServiceConfig for the talosctl-oidc extension.
+# It includes the CA certificate and key as config files, and sets the necessary environment variables for
+# the extension to function. This is an example configuration; you should replace the placeholder values
+# with your actual CA certificate, key, and desired settings.
+apiVersion: v1alpha1
+kind: ExtensionServiceConfig
+name: talosctl-oidc
+configFiles:
+  - content: |
+      -----BEGIN CERTIFICATE-----
+      <your CA certificate PEM content here>
+      -----END CERTIFICATE-----
+    mountPath: /config/ca.crt
+  - content: |
+      -----BEGIN ED25519 PRIVATE KEY-----
+      <your CA private key PEM content here>
+      -----END ED25519 PRIVATE KEY-----
+    mountPath: /config/ca.key
+environment:
+  - TALOSCTL_OIDC_CA_CERT=/config/ca.crt
+  - TALOSCTL_OIDC_CA_KEY=/config/ca.key
+  - TALOSCTL_OIDC_ADMIN_TOKEN=<randomly generated admin token here>
+  - TALOSCTL_OIDC_ISSUER_URL=https://oidc.home.une-tasse-de.cafe/application/o/talos-oidc/
+  - TALOSCTL_OIDC_CLIENT_ID=talosctl_oidc
+  - TALOSCTL_OIDC_ENDPOINTS=192.168.0.42
+  - TALOSCTL_OIDC_CERT_TTL=10m
+  - TALOSCTL_OIDC_ROLES=os:admin
+  - TALOSCTL_OIDC_DATA_DIR=/var/lib/talosctl-oidc
