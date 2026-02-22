@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -15,8 +14,13 @@ import (
 	"github.com/qjoly/talosctl-oidc/pkg/admin"
 	"github.com/qjoly/talosctl-oidc/pkg/audit"
 	"github.com/qjoly/talosctl-oidc/pkg/certsign"
+	"github.com/qjoly/talosctl-oidc/pkg/config"
 	"github.com/qjoly/talosctl-oidc/pkg/server"
 )
+
+var serveFlags struct {
+	configFile string
+}
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -24,165 +28,143 @@ var serveCmd = &cobra.Command{
 	Long: `Start the certificate exchange server that validates OIDC tokens
 and issues ephemeral Talos client certificates.
 
-All configuration is done via environment variables:
+Configuration is loaded from a YAML file and/or environment variables.
+When both are provided, environment variables take precedence over the
+config file (allowing the file to set base values and env vars to override).
 
-  TALOSCTL_OIDC_CA_CERT        Path to Talos CA certificate file (required unless CA_CERT_DATA or TALOS_CONFIG is set)
-  TALOSCTL_OIDC_CA_KEY         Path to Talos CA private key file (required unless CA_KEY_DATA or TALOS_CONFIG is set)
-  TALOSCTL_OIDC_CA_CERT_DATA   PEM-encoded Talos CA certificate, supplied inline (takes precedence over CA_CERT)
-  TALOSCTL_OIDC_CA_KEY_DATA    PEM-encoded Talos CA private key, supplied inline (takes precedence over CA_KEY)
-  TALOSCTL_OIDC_TALOS_CONFIG   Path to a talosconfig YAML file (as provisioned by talos.dev ServiceAccount at
-                               /var/run/secrets/talos.dev/config). When set, takes precedence over all other CA vars.
-  TALOSCTL_OIDC_ISSUER_URL     OIDC issuer URL for token validation (required)
-  TALOSCTL_OIDC_CLIENT_ID      Expected OIDC client ID / audience (required)
-  TALOSCTL_OIDC_ENDPOINTS      Talos node endpoints, comma-separated (required)
-  TALOSCTL_OIDC_CLIENT_SECRET  OIDC client secret (for HS256-signed tokens)
-  TALOSCTL_OIDC_LISTEN         Address to listen on (default: ":8443")
-  TALOSCTL_OIDC_CERT_TTL       Certificate lifetime (default: "1h")
-  TALOSCTL_OIDC_ROLES          Talos roles, comma-separated (default: "os:admin")
+Configuration file:
+
+  --config / TALOSCTL_OIDC_CONFIG    Path to YAML configuration file
+
+Example configuration file:
+
+  issuer_url: https://accounts.google.com
+  client_id: my-client-id
+  endpoints:
+    - 10.0.0.1
+    - 10.0.0.2
+  ca_cert: /path/to/ca.crt
+  ca_key: /path/to/ca.key
+  listen: ":8443"
+  cert_ttl: "1h"
+  roles:
+    - os:admin
+  tls_cert: /path/to/tls.crt
+  tls_key: /path/to/tls.key
+  data_dir: /var/lib/talosctl-oidc
+  audit_log: /var/log/talosctl-oidc/audit.log
+  admin_token: my-secret-token
+
+Environment variables (override config file values):
+
+  TALOSCTL_OIDC_CONFIG       Path to YAML configuration file (alternative to --config)
+  TALOSCTL_OIDC_CA_CERT      Path to Talos CA certificate file
+  TALOSCTL_OIDC_CA_KEY       Path to Talos CA private key file
+  TALOSCTL_OIDC_CA_CERT_DATA PEM-encoded Talos CA certificate, inline
+  TALOSCTL_OIDC_CA_KEY_DATA  PEM-encoded Talos CA private key, inline
+  TALOSCTL_OIDC_TALOS_CONFIG Path to a talosconfig YAML file
+  TALOSCTL_OIDC_ISSUER_URL   OIDC issuer URL for token validation
+  TALOSCTL_OIDC_CLIENT_ID    Expected OIDC client ID / audience
+  TALOSCTL_OIDC_ENDPOINTS    Talos node endpoints, comma-separated
+  TALOSCTL_OIDC_CLIENT_SECRET OIDC client secret (for HS256-signed tokens)
+  TALOSCTL_OIDC_LISTEN       Address to listen on (default: ":8443")
+  TALOSCTL_OIDC_CERT_TTL     Certificate lifetime (default: "1h")
+  TALOSCTL_OIDC_ROLES        Talos roles, comma-separated (default: "os:admin")
 
 TLS configuration:
 
-  TALOSCTL_OIDC_TLS_CERT       Path to TLS certificate file
-  TALOSCTL_OIDC_TLS_KEY        Path to TLS private key file
-  TALOSCTL_OIDC_INSECURE       Set to "true" to serve plain HTTP (no TLS)
-  TALOSCTL_OIDC_DATA_DIR       Directory to persist the self-signed TLS certificate
+  TALOSCTL_OIDC_TLS_CERT     Path to TLS certificate file
+  TALOSCTL_OIDC_TLS_KEY      Path to TLS private key file
+  TALOSCTL_OIDC_INSECURE     Set to "true" to serve plain HTTP (no TLS)
+  TALOSCTL_OIDC_DATA_DIR     Directory to persist the self-signed TLS certificate
 
 Audit & admin:
 
-  TALOSCTL_OIDC_AUDIT_LOG      Path to audit log file (default: stdout, "-" for stdout)
-  TALOSCTL_OIDC_ADMIN_TOKEN    Bearer token for /admin/* endpoints (required to enable admin API)
+  TALOSCTL_OIDC_AUDIT_LOG    Path to audit log file (default: stdout, "-" for stdout)
+  TALOSCTL_OIDC_ADMIN_TOKEN  Bearer token for /admin/* endpoints
 
-By default (no TLS env vars set), the server generates a self-signed TLS
+By default (no TLS config), the server generates a self-signed TLS
 certificate at startup and logs the CA PEM so clients can trust it via
 the --server-ca flag on the login command.
 
-When TALOSCTL_OIDC_DATA_DIR is set, the self-signed certificate is persisted
-to that directory and reused across restarts (the CA PEM stays stable).
-
 TLS modes (in order of precedence):
-  1. TALOSCTL_OIDC_TLS_CERT + TALOSCTL_OIDC_TLS_KEY  -> HTTPS with provided certs
-  2. TALOSCTL_OIDC_INSECURE=true                      -> plain HTTP (WARNING: insecure)
-  3. Default                                           -> HTTPS with auto-generated self-signed cert`,
+  1. tls_cert + tls_key (or env vars)  -> HTTPS with provided certs
+  2. insecure=true (or env var)        -> plain HTTP (WARNING: insecure)
+  3. Default                           -> HTTPS with auto-generated self-signed cert`,
 	RunE: runServe,
 }
 
 func init() {
+	serveCmd.Flags().StringVarP(&serveFlags.configFile, "config", "c", "", "path to YAML configuration file (env: TALOSCTL_OIDC_CONFIG)")
 	rootCmd.AddCommand(serveCmd)
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
-	// Read all configuration from environment variables.
-	caCert := os.Getenv("TALOSCTL_OIDC_CA_CERT")
-	caKey := os.Getenv("TALOSCTL_OIDC_CA_KEY")
-	caCertData := os.Getenv("TALOSCTL_OIDC_CA_CERT_DATA")
-	caKeyData := os.Getenv("TALOSCTL_OIDC_CA_KEY_DATA")
-	talosConfig := os.Getenv("TALOSCTL_OIDC_TALOS_CONFIG")
-	issuerURL := os.Getenv("TALOSCTL_OIDC_ISSUER_URL")
-	clientID := os.Getenv("TALOSCTL_OIDC_CLIENT_ID")
-	endpointsRaw := os.Getenv("TALOSCTL_OIDC_ENDPOINTS")
-	clientSecret := os.Getenv("TALOSCTL_OIDC_CLIENT_SECRET")
-	listen := os.Getenv("TALOSCTL_OIDC_LISTEN")
-	certTTLRaw := os.Getenv("TALOSCTL_OIDC_CERT_TTL")
-	rolesRaw := os.Getenv("TALOSCTL_OIDC_ROLES")
-
-	// TLS env vars.
-	tlsCert := os.Getenv("TALOSCTL_OIDC_TLS_CERT")
-	tlsKey := os.Getenv("TALOSCTL_OIDC_TLS_KEY")
-	insecureRaw := os.Getenv("TALOSCTL_OIDC_INSECURE")
-	dataDir := os.Getenv("TALOSCTL_OIDC_DATA_DIR")
-
-	// Audit & admin env vars.
-	auditLogPath := os.Getenv("TALOSCTL_OIDC_AUDIT_LOG")
-	adminToken := os.Getenv("TALOSCTL_OIDC_ADMIN_TOKEN")
-
-	// Validate required env vars.
-	var missing []string
-	if talosConfig == "" && caCert == "" && caCertData == "" {
-		missing = append(missing, "TALOSCTL_OIDC_CA_CERT, TALOSCTL_OIDC_CA_CERT_DATA, or TALOSCTL_OIDC_TALOS_CONFIG")
-	}
-	if talosConfig == "" && caKey == "" && caKeyData == "" {
-		missing = append(missing, "TALOSCTL_OIDC_CA_KEY, TALOSCTL_OIDC_CA_KEY_DATA, or TALOSCTL_OIDC_TALOS_CONFIG")
-	}
-	if issuerURL == "" {
-		missing = append(missing, "TALOSCTL_OIDC_ISSUER_URL")
-	}
-	if clientID == "" {
-		missing = append(missing, "TALOSCTL_OIDC_CLIENT_ID")
-	}
-	if endpointsRaw == "" {
-		missing = append(missing, "TALOSCTL_OIDC_ENDPOINTS")
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("required environment variables not set: %s", strings.Join(missing, ", "))
+	// Load configuration from file + environment variables.
+	rc, err := config.Load(serveFlags.configFile)
+	if err != nil {
+		return fmt.Errorf("loading configuration: %w", err)
 	}
 
-	// Apply defaults.
-	if listen == "" {
-		listen = ":8443"
+	// Apply defaults for optional fields.
+	rc.ApplyDefaults()
+
+	// Validate required configuration.
+	if err := rc.Validate(); err != nil {
+		return err
 	}
 
-	certTTL := 1 * time.Hour
-	if certTTLRaw != "" {
-		d, err := time.ParseDuration(certTTLRaw)
-		if err != nil {
-			return fmt.Errorf("invalid TALOSCTL_OIDC_CERT_TTL %q: %w", certTTLRaw, err)
-		}
-		certTTL = d
+	// Parse the certificate TTL.
+	certTTL, err := rc.ParseCertTTL()
+	if err != nil {
+		return err
 	}
 
-	roles := []string{"os:admin"}
-	if rolesRaw != "" {
-		roles = strings.Split(rolesRaw, ",")
-	}
-
-	endpoints := strings.Split(endpointsRaw, ",")
-
-	insecure := strings.EqualFold(insecureRaw, "true") || insecureRaw == "1"
-
-	// Validate TLS configuration.
-	if (tlsCert != "") != (tlsKey != "") {
-		return fmt.Errorf("TALOSCTL_OIDC_TLS_CERT and TALOSCTL_OIDC_TLS_KEY must both be set (or both unset)")
-	}
-	if tlsCert != "" && insecure {
-		return fmt.Errorf("cannot set both TALOSCTL_OIDC_TLS_CERT and TALOSCTL_OIDC_INSECURE=true")
+	// Log configuration source.
+	if serveFlags.configFile != "" {
+		log.Printf("Configuration loaded from file: %s (env vars override)", serveFlags.configFile)
+	} else if os.Getenv("TALOSCTL_OIDC_CONFIG") != "" {
+		log.Printf("Configuration loaded from file: %s (env vars override)", os.Getenv("TALOSCTL_OIDC_CONFIG"))
+	} else {
+		log.Printf("Configuration loaded from environment variables")
 	}
 
 	// Load the Talos CA.
 	// Priority order:
-	//   1. TALOSCTL_OIDC_TALOS_CONFIG — talosconfig YAML file (e.g. from talos.dev ServiceAccount)
-	//   2. TALOSCTL_OIDC_CA_CERT_DATA / TALOSCTL_OIDC_CA_KEY_DATA — inline PEM via env vars
-	//   3. TALOSCTL_OIDC_CA_CERT / TALOSCTL_OIDC_CA_KEY — file paths
+	//   1. talos_config — talosconfig YAML file (e.g. from talos.dev ServiceAccount)
+	//   2. ca_cert_data / ca_key_data — inline PEM
+	//   3. ca_cert / ca_key — file paths
 	var ca *certsign.CA
 	var caErr error
-	if talosConfig != "" {
-		ca, caErr = certsign.LoadCAFromTalosConfig(talosConfig)
+	if rc.TalosConfig != "" {
+		ca, caErr = certsign.LoadCAFromTalosConfig(rc.TalosConfig)
 		if caErr != nil {
-			return fmt.Errorf("loading CA from talosconfig %s: %w", talosConfig, caErr)
+			return fmt.Errorf("loading CA from talosconfig %s: %w", rc.TalosConfig, caErr)
 		}
-		log.Printf("Loaded Talos CA from talosconfig %s", talosConfig)
-	} else if caCertData != "" && caKeyData != "" {
-		ca, caErr = certsign.ParseCA([]byte(caCertData), []byte(caKeyData))
+		log.Printf("Loaded Talos CA from talosconfig %s", rc.TalosConfig)
+	} else if rc.CACertData != "" && rc.CAKeyData != "" {
+		ca, caErr = certsign.ParseCA([]byte(rc.CACertData), []byte(rc.CAKeyData))
 		if caErr != nil {
 			return fmt.Errorf("loading CA from inline data: %w", caErr)
 		}
-		log.Printf("Loaded Talos CA from inline data (TALOSCTL_OIDC_CA_CERT_DATA)")
+		log.Printf("Loaded Talos CA from inline data (ca_cert_data)")
 	} else {
-		ca, caErr = certsign.LoadCA(caCert, caKey)
+		ca, caErr = certsign.LoadCA(rc.CACert, rc.CAKey)
 		if caErr != nil {
 			return fmt.Errorf("loading CA: %w", caErr)
 		}
-		log.Printf("Loaded Talos CA from %s", caCert)
+		log.Printf("Loaded Talos CA from %s", rc.CACert)
 	}
 
 	// Initialize the audit logger.
-	auditLogger, err := audit.NewLogger(auditLogPath)
+	auditLogger, err := audit.NewLogger(rc.AuditLog)
 	if err != nil {
 		return fmt.Errorf("initializing audit logger: %w", err)
 	}
 	defer auditLogger.Close()
 
-	if auditLogPath != "" && auditLogPath != "-" {
-		log.Printf("Audit log: %s", auditLogPath)
+	if rc.AuditLog != "" && rc.AuditLog != "-" {
+		log.Printf("Audit log: %s", rc.AuditLog)
 	} else {
 		log.Printf("Audit log: stdout")
 	}
@@ -190,27 +172,27 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Initialize admin tracker (subscribes to audit events).
 	tracker := admin.NewTracker(auditLogger)
 
-	if adminToken != "" {
+	if rc.AdminToken != "" {
 		log.Printf("Admin API: enabled (protected by bearer token)")
 	} else {
-		log.Printf("Admin API: disabled (set TALOSCTL_OIDC_ADMIN_TOKEN to enable)")
+		log.Printf("Admin API: disabled (set admin_token / TALOSCTL_OIDC_ADMIN_TOKEN to enable)")
 	}
 
 	cfg := server.Config{
-		ListenAddr:   listen,
+		ListenAddr:   rc.Listen,
 		CA:           ca,
 		CertTTL:      certTTL,
-		Roles:        roles,
-		IssuerURL:    issuerURL,
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		Endpoints:    endpoints,
-		TLSCertFile:  tlsCert,
-		TLSKeyFile:   tlsKey,
-		Insecure:     insecure,
-		DataDir:      dataDir,
+		Roles:        rc.Roles,
+		IssuerURL:    rc.IssuerURL,
+		ClientID:     rc.ClientID,
+		ClientSecret: rc.ClientSecret,
+		Endpoints:    rc.Endpoints,
+		TLSCertFile:  rc.TLSCert,
+		TLSKeyFile:   rc.TLSKey,
+		Insecure:     rc.Insecure,
+		DataDir:      rc.DataDir,
 		AuditLogger:  auditLogger,
-		AdminToken:   adminToken,
+		AdminToken:   rc.AdminToken,
 		AdminTracker: tracker,
 	}
 
