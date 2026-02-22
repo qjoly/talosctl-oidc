@@ -573,7 +573,12 @@ helm install talosctl-oidc charts/talosctl-oidc/ \
   --set "config.endpoints={10.0.0.1,10.0.0.2}"
 ```
 
-> Note: the talosconfig provisioned by this feature contains the Talos API **client** key, not the CA signing key. This mode is only useful if your Talos version exposes the issuing CA key via the ServiceAccount secret.
+> Important compatibility note:
+> 
+> - `talosctl-oidc` expects a talosconfig-style payload that includes **issuing CA** material in `ca` and `key` fields.
+> - The current `kubernetesTalosAPIAccess` feature in Talos typically provisions a talosconfig containing a **client** certificate/key only, not the CA signing key.
+> 
+> As a result, Option C will only work on Talos versions or deployments where the ServiceAccount secret has been customized (or extended by Talos) to also expose the issuing CA signing key in `ca`/`key` fields. On stock Talos releases that do **not** expose the CA signing key via this secret, Option C will not function and you should use Option A (manual CA secret) or Option B (direct Talos API) instead.
 
 ### 3. Key chart values
 
