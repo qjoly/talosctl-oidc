@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -43,7 +44,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	fmt.Println("--- OIDC Token ---")
 	token, err := keychain.Retrieve(statusFlags.contextName)
 	if err != nil {
-		fmt.Printf("Keychain:  error (%v)\n", err)
+		fmt.Fprintf(os.Stderr, "Keychain:  error (%v)\n", err)
 	} else if token == nil {
 		fmt.Println("Keychain:  no cached token")
 	} else {
