@@ -74,7 +74,8 @@ Environment variables (override config file values):
   TALOSCTL_OIDC_ISSUER_URL   OIDC issuer URL for token validation
   TALOSCTL_OIDC_CLIENT_ID    Expected OIDC client ID / audience
   TALOSCTL_OIDC_ENDPOINTS    Talos node endpoints, comma-separated
-  TALOSCTL_OIDC_CLIENT_SECRET OIDC client secret (for HS256-signed tokens)
+  TALOSCTL_OIDC_CLIENT_SECRET      OIDC client secret (for HS256-signed tokens)
+  TALOSCTL_OIDC_CLIENT_SECRET_FILE  Path to file containing OIDC client secret (recommended over flag/env var)
   TALOSCTL_OIDC_LISTEN       Address to listen on (default: ":8443")
   TALOSCTL_OIDC_CERT_TTL     Certificate lifetime (default: "1h")
   TALOSCTL_OIDC_ROLES        Talos roles, comma-separated (default: "os:admin")
@@ -128,6 +129,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Validate required configuration.
 	if err := rc.Validate(); err != nil {
+		return err
+	}
+
+	// Load client secret from file if configured (avoids exposing in process list).
+	if err := rc.LoadClientSecret(); err != nil {
 		return err
 	}
 
