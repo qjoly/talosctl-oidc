@@ -1,5 +1,5 @@
 ./talos
-talosctl-oidc
+/talosctl-oidc
 ./temp
 talos-admin.key
 talos-admin.crt
