@@ -125,8 +125,10 @@ config:
 
   # TALOSCTL_OIDC_ENDPOINTS (Required)
   # List of Talos node endpoints
-  endpoints:
-    - 192.168.0.42
+  # Example:
+  #   endpoints:
+  #     - 10.0.0.1
+  endpoints: []
 
   # TALOSCTL_OIDC_ROLES
   roles:
