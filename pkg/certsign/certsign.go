@@ -1,17 +1,16 @@
 package certsign
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -41,90 +40,30 @@ func LoadCA(certPath, keyPath string) (*CA, error) {
 // talos.dev/v1alpha1 ServiceAccount at /var/run/secrets/talos.dev/config) and
 // extracts the CA certificate and issuing private key from the default context.
 //
-// The talosconfig format stores the CA cert under the "ca" key and the issuing
-// key under the "key" key, both as base64-encoded PEM.
-func LoadCAFromTalosConfig(configPath string) (*CA, error) {
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading talosconfig: %w", err)
-	}
-
-	// Minimal line-by-line parser: find "ca:" and "key:" inside the active context.
-	// We avoid pulling in a full YAML library to keep dependencies minimal.
-	certB64, keyB64, err := parseTalosConfigFields(data)
-	if err != nil {
-		return nil, err
-	}
-
-	certPEM, err := base64.StdEncoding.DecodeString(certB64)
-	if err != nil {
-		return nil, fmt.Errorf("decoding talosconfig ca field: %w", err)
-	}
-
-	keyPEM, err := base64.StdEncoding.DecodeString(keyB64)
-	if err != nil {
-		return nil, fmt.Errorf("decoding talosconfig key field: %w", err)
-	}
-
-	return ParseCA(certPEM, keyPEM)
-}
-
-// parseTalosConfigFields extracts the base64-encoded "ca" and "key" values
-// from the first context block found in a talosconfig YAML byte slice.
-// It handles multi-line base64 values (indented continuation lines).
-func parseTalosConfigFields(data []byte) (ca, key string, err error) {
-	lines := strings.Split(string(data), "\n")
-
-	var caVal, keyVal strings.Builder
-	var currentField string // "ca" or "key"
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		// Detect field start: "ca: <value>" or "key: <value>"
-		for _, field := range []string{"ca", "key"} {
-			prefix := field + ":"
-			if strings.HasPrefix(trimmed, prefix) {
-				val := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
-				currentField = field
-				switch field {
-				case "ca":
-					caVal.Reset()
-					caVal.WriteString(val)
-				case "key":
-					keyVal.Reset()
-					keyVal.WriteString(val)
-				}
-				goto nextLine
-			}
-		}
-
-		// Continuation of a multi-line base64 value: indented and no colon key.
-		if currentField != "" && len(line) > 0 && (line[0] == ' ' || line[0] == '\t') && !strings.Contains(trimmed, ":") {
-			switch currentField {
-			case "ca":
-				caVal.WriteString(trimmed)
-			case "key":
-				keyVal.WriteString(trimmed)
-			}
-		} else if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
-			// Top-level key: reset continuation tracking unless it's a known field.
-			if trimmed != "" && !strings.HasPrefix(trimmed, "ca:") && !strings.HasPrefix(trimmed, "key:") {
-				currentField = ""
-			}
-		}
-
-	nextLine:
-	}
-
-	if caVal.Len() == 0 {
-		return "", "", fmt.Errorf("talosconfig: 'ca' field not found")
-	}
-	if keyVal.Len() == 0 {
-		return "", "", fmt.Errorf("talosconfig: 'key' field not found")
-	}
-
-	return caVal.String(), keyVal.String(), nil
+// The talosconfig provisioned by the Talos ServiceAccount contains three fields
+// under the active context:
+//
+//	ca  — the cluster CA certificate (base64-encoded PEM)
+//	crt — a client certificate signed by the CA (base64-encoded PEM)
+//	key — the client's private key (base64-encoded PEM)
+//
+// This server needs to *sign* new client certificates, which requires the CA
+// private key. The talos.dev ServiceAccount does NOT provision the CA private
+// key. Therefore this function returns a clear error rather than silently
+// loading a mismatched ca cert + client key pair.
+//
+// To run this server you must supply the Talos CA certificate and its private
+// key via one of the other mechanisms (TALOSCTL_OIDC_CA_CERT_DATA /
+// TALOSCTL_OIDC_CA_KEY_DATA env vars, or TALOSCTL_OIDC_CA_CERT /
+// TALOSCTL_OIDC_CA_KEY file paths).
+func LoadCAFromTalosConfig(_ string) (*CA, error) {
+	return nil, fmt.Errorf(
+		"the talos.dev/v1alpha1 ServiceAccount (apiAccess) only provisions a client " +
+			"certificate and key, not the CA private key required to sign new certificates. " +
+			"Disable talos.apiAccess.enabled and supply the Talos CA cert and key directly " +
+			"via TALOSCTL_OIDC_CA_CERT_DATA / TALOSCTL_OIDC_CA_KEY_DATA (or the file-path " +
+			"equivalents TALOSCTL_OIDC_CA_CERT / TALOSCTL_OIDC_CA_KEY)",
+	)
 }
 
 // ParseCA parses PEM-encoded CA certificate and private key bytes.
@@ -156,6 +95,22 @@ func ParseCA(certPEM, keyPEM []byte) (*CA, error) {
 	signer, ok := privKey.(crypto.Signer)
 	if !ok {
 		return nil, fmt.Errorf("private key does not implement crypto.Signer")
+	}
+
+	// Validate that the private key matches the certificate's public key.
+	// x509.CreateCertificate enforces this too, but catching it here at load
+	// time gives a much clearer error message than "PrivateKey doesn't match
+	// parent's PublicKey" surfacing on the first certificate request.
+	certPubDER, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling CA certificate public key: %w", err)
+	}
+	signerPubDER, err := x509.MarshalPKIXPublicKey(signer.Public())
+	if err != nil {
+		return nil, fmt.Errorf("marshaling CA private key's public key: %w", err)
+	}
+	if !bytes.Equal(certPubDER, signerPubDER) {
+		return nil, fmt.Errorf("CA private key does not match CA certificate public key: the cert and key are from different key pairs")
 	}
 
 	return &CA{

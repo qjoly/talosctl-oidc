@@ -145,19 +145,6 @@ config:
 
 # Talos CA Configuration
 talos:
-  # -- Talos API Access from Kubernetes mode.
-  # When enabled, the chart creates a talos.dev/v1alpha1 ServiceAccount so that
-  # Talos itself provisions the CA secret into the pod via the projected volume at
-  # /var/run/secrets/talos.dev.
-  # Requires the kubernetesTalosAPIAccess feature to be enabled in the machine config.
-  # See: https://docs.siderolabs.com/kubernetes-guides/advanced-guides/talos-api-access-from-k8s/
-  # When this is enabled, caSecretName / caCert / caKey / caCertData / caKeyData are ignored.
-  apiAccess:
-    enabled: true
-    # Talos roles to request for the ServiceAccount (must be allowed in machineconfig)
-    roles:
-      - "os:admin"
-
   # Name of an existing secret containing the Talos CA cert and key.
   # Leave empty to have the chart create the secret from caCert/caKey below.
   # Keys inside the secret must match caSecretKeys below.
@@ -179,6 +166,6 @@ talos:
   # Inline CA PEM content passed directly as environment variables (no file mount).
   # The chart stores these in a Secret and injects them via TALOSCTL_OIDC_CA_CERT_DATA
   # and TALOSCTL_OIDC_CA_KEY_DATA. Takes precedence over caCert/caKey when set.
-  # Ignored when apiAccess.enabled=true or caSecretName is set.
+  # Ignored when caSecretName is set.
   caCertData: ""
   caKeyData: ""

@@ -525,18 +525,19 @@ echo "<base64-crt>" | base64 -d > talos-ca.crt
 echo "<base64-key>" | base64 -d > talos-ca.key
 ```
 
-Pass the decoded PEM values at install time via `--set-string`. The chart stores them in a Kubernetes Secret and injects them via environment variables — no file mount needed:
+Pass the decoded PEM files at install time via `--set-file`. The chart stores them in a Kubernetes Secret and injects them via environment variables — no file mount needed:
 
 ```bash
 helm install talosctl-oidc charts/talosctl-oidc/ \
   --namespace talos-system --create-namespace \
-  --set talos.apiAccess.enabled=false \
-  --set-string "talos.caCertData=$(cat talos-ca.crt)" \
-  --set-string "talos.caKeyData=$(cat talos-ca.key)" \
+  --set-file talos.caCertData=talos-ca.crt \
+  --set-file talos.caKeyData=talos-ca.key \
   --set config.issuerUrl=https://idp.example.com/application/o/talos-oidc/ \
   --set config.clientId=your-client-id \
   --set "config.endpoints={10.0.0.1,10.0.0.2}"
 ```
+
+> `--set-file` reads the file contents verbatim (preserving newlines). Do **not** use `--set` or `--set-string` for PEM data — those pass the value as a shell string and will strip the newlines that PEM requires, causing a "failed to decode CA certificate PEM" error at startup.
 
 > Keep `talos-ca.key` safe. It is the private key that signs all client certificates. Do not commit it to source control.
 
@@ -554,7 +555,6 @@ kubectl create secret generic talosctl-oidc-ca \
 ```bash
 helm install talosctl-oidc charts/talosctl-oidc/ \
   --namespace talos-system --create-namespace \
-  --set talos.apiAccess.enabled=false \
   --set talos.caSecretName=talosctl-oidc-ca \
   --set "talos.caSecretKeys.cert=talos-ca.crt" \
   --set "talos.caSecretKeys.key=talos-ca.key" \
@@ -562,26 +562,6 @@ helm install talosctl-oidc charts/talosctl-oidc/ \
   --set config.clientId=your-client-id \
   --set "config.endpoints={10.0.0.1,10.0.0.2}"
 ```
-
-#### Option C — Talos API Access from Kubernetes
-
-If your cluster has the [`kubernetesTalosAPIAccess`](https://www.talos.dev/latest/kubernetes-guides/advanced-guides/talos-api-access-from-k8s/) feature enabled, Talos can provision the CA automatically via a `talos.dev/v1alpha1` ServiceAccount. Enable it in the chart:
-
-```bash
-helm install talosctl-oidc charts/talosctl-oidc/ \
-  --namespace talos-system --create-namespace \
-  --set talos.apiAccess.enabled=true \
-  --set config.issuerUrl=https://idp.example.com/application/o/talos-oidc/ \
-  --set config.clientId=your-client-id \
-  --set "config.endpoints={10.0.0.1,10.0.0.2}"
-```
-
-> Important compatibility note:
-> 
-> - `talosctl-oidc` expects a talosconfig-style payload that includes **issuing CA** material in `ca` and `key` fields.
-> - The current `kubernetesTalosAPIAccess` feature in Talos typically provisions a talosconfig containing a **client** certificate/key only, not the CA signing key.
-> 
-> As a result, Option C will only work on Talos versions or deployments where the ServiceAccount secret has been customized (or extended by Talos) to also expose the issuing CA signing key in `ca`/`key` fields. On stock Talos releases that do **not** expose the CA signing key via this secret, Option C will not function and you should use Option A (manual CA secret) or Option B (direct Talos API) instead.
 
 ### 3. Key chart values
 
@@ -595,7 +575,6 @@ helm install talosctl-oidc charts/talosctl-oidc/ \
 | `config.certTTL` | `1h` | Lifetime of issued client certificates |
 | `config.adminToken` | `""` | Bearer token to enable the admin API |
 | `config.auditLog` | `-` | Audit log destination (`-` for stdout) |
-| `talos.apiAccess.enabled` | `true` | Use Talos API Access from Kubernetes |
 | `talos.caCertData` | `""` | Inline Talos CA certificate PEM |
 | `talos.caKeyData` | `""` | Inline Talos CA private key PEM |
 | `talos.caSecretName` | `""` | Name of an existing Secret with the CA |

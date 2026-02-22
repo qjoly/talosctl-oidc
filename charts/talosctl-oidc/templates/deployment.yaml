@@ -25,17 +25,9 @@ spec:
       serviceAccountName: {{ include "talosctl-oidc.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      {{- if .Values.talos.apiAccess.enabled }}
-      # When using Talos API Access from Kubernetes, the pod must be able to reach
-      # the Talos API on control-plane nodes. The toleration below allows scheduling
-      # on control-plane nodes (which Talos taints with node-role.kubernetes.io/control-plane).
-      tolerations:
-        - operator: Exists
-      {{- else }}
       {{- with .Values.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
-      {{- end }}
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}
@@ -57,12 +49,7 @@ spec:
           env:
             - name: TALOSCTL_OIDC_INSECURE
               value: {{ if or .Values.config.insecure (and .Values.ingress.enabled .Values.ingress.tls) }}"true"{{ else }}"false"{{ end }}
-            {{- if .Values.talos.apiAccess.enabled }}
-            # Talos API Access from Kubernetes: the talosconfig is mounted at a well-known path.
-            # TALOSCTL_OIDC_TALOS_CONFIG instructs the server to parse it and extract the CA.
-            - name: TALOSCTL_OIDC_TALOS_CONFIG
-              value: "/var/run/secrets/talos.dev/config"
-            {{- else if and .Values.talos.caCertData .Values.talos.caKeyData }}
+            {{- if and .Values.talos.caCertData .Values.talos.caKeyData }}
             # Inline PEM mode: CA content is injected directly via environment variables.
             - name: TALOSCTL_OIDC_CA_CERT_DATA
               valueFrom:
@@ -123,12 +110,7 @@ spec:
             - name: TALOSCTL_OIDC_LISTEN
               value: ":8443"
           volumeMounts:
-            {{- if .Values.talos.apiAccess.enabled }}
-            # Talos provisions this secret automatically via the talos.dev ServiceAccount.
-            - name: talos-secrets
-              mountPath: "/var/run/secrets/talos.dev"
-              readOnly: true
-            {{- else if not (and .Values.talos.caCertData .Values.talos.caKeyData) }}
+            {{- if not (and .Values.talos.caCertData .Values.talos.caKeyData) }}
             - name: talos-ca
               mountPath: "/etc/talos"
               readOnly: true
@@ -139,11 +121,7 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
-        {{- if .Values.talos.apiAccess.enabled }}
-        - name: talos-secrets
-          secret:
-            secretName: {{ include "talosctl-oidc.fullname" . }}-talos-secrets
-        {{- else if not (and .Values.talos.caCertData .Values.talos.caKeyData) }}
+        {{- if not (and .Values.talos.caCertData .Values.talos.caKeyData) }}
         - name: talos-ca
           secret:
             secretName: {{ default (printf "%s-ca" (include "talosctl-oidc.fullname" .)) .Values.talos.caSecretName }}
@@ -151,7 +129,6 @@ spec:
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- if not .Values.talos.apiAccess.enabled }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -159,5 +136,4 @@ spec:
       {{- with .Values.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
-      {{- end }}
       {{- end }}

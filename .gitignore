@@ -1,7 +1,10 @@
 ./talos
-talosctl-oidc
+/talosctl-oidc
 ./temp
 talos-admin.key
 talos-admin.crt
 talos-ca.crt
-patch-talosctl-oidc.yaml
+temp/
+talos/
+
+charts/**/values.dev.yaml
