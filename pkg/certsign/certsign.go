@@ -194,7 +194,7 @@ func GenerateClientCert(ca *CA, roles []string, ttl time.Duration) (*ClientCerti
 	}
 
 	keyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "ED25519 PRIVATE KEY",
+		Type:  "PRIVATE KEY",
 		Bytes: privKeyBytes,
 	})
 
