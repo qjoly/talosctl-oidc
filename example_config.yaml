@@ -6,6 +6,14 @@ client_id: talosctl_oidc # Required
 ca_cert: temp/talos-ca.crt
 ca_key: temp/talos-api-ca.key
 
+rate_limit_requests: 10
+rate_limit_window: "1m"
+
+ip_allowlist:
+  - 192.168.1.0/24
+  - 10.0.0.50
+  - ::1
+
 # Network Configuration
 listen: ":8443"
 endpoints:

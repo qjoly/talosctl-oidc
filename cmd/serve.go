@@ -12,9 +12,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/qjoly/talosctl-oidc/pkg/admin"
+	"github.com/qjoly/talosctl-oidc/pkg/allowlist"
 	"github.com/qjoly/talosctl-oidc/pkg/audit"
 	"github.com/qjoly/talosctl-oidc/pkg/certsign"
 	"github.com/qjoly/talosctl-oidc/pkg/config"
+	"github.com/qjoly/talosctl-oidc/pkg/ratelimit"
 	"github.com/qjoly/talosctl-oidc/pkg/server"
 )
 
@@ -54,6 +56,11 @@ Example configuration file:
   data_dir: /var/lib/talosctl-oidc
   audit_log: /var/log/talosctl-oidc/audit.log
   admin_token: my-secret-token
+  rate_limit_requests: 10
+  rate_limit_window: "1m"
+  ip_allowlist:
+    - 192.168.1.0/24
+    - 10.0.0.50
 
 Environment variables (override config file values):
 
@@ -82,6 +89,15 @@ Audit & admin:
 
   TALOSCTL_OIDC_AUDIT_LOG    Path to audit log file (default: stdout, "-" for stdout)
   TALOSCTL_OIDC_ADMIN_TOKEN  Bearer token for /admin/* endpoints
+
+Rate limiting:
+
+  TALOSCTL_OIDC_RATE_LIMIT_REQUESTS  Requests per window (default: 0 = disabled)
+  TALOSCTL_OIDC_RATE_LIMIT_WINDOW    Rate limit window (default: "1m")
+
+IP allowlist:
+
+  TALOSCTL_OIDC_IP_ALLOWLIST  Comma-separated list of allowed IPs/CIDRs (default: allow all)
 
 By default (no TLS config), the server generates a self-signed TLS
 certificate at startup and logs the CA PEM so clients can trust it via
@@ -178,6 +194,34 @@ func runServe(cmd *cobra.Command, args []string) error {
 		log.Printf("Admin API: disabled (set admin_token / TALOSCTL_OIDC_ADMIN_TOKEN to enable)")
 	}
 
+	// Initialize rate limiter if configured.
+	var rateLimiter *ratelimit.Limiter
+	if rc.RateLimitRequests > 0 {
+		window := rc.RateLimitWindow
+		if window <= 0 {
+			window = time.Minute
+		}
+		rateLimiter = ratelimit.New(rc.RateLimitRequests, window)
+		cleanupStop := rateLimiter.StartCleanup(5 * time.Minute)
+		defer close(cleanupStop)
+		log.Printf("Rate limiting: enabled (%d requests per %v)", rc.RateLimitRequests, window)
+	} else {
+		log.Printf("Rate limiting: disabled")
+	}
+
+	// Initialize IP allowlist if configured.
+	var ipAllowlist *allowlist.Allowlist
+	if len(rc.IPAllowlist) > 0 {
+		var err error
+		ipAllowlist, err = allowlist.New(rc.IPAllowlist)
+		if err != nil {
+			return fmt.Errorf("initializing IP allowlist: %w", err)
+		}
+		log.Printf("IP allowlist: enabled (%d entries)", len(rc.IPAllowlist))
+	} else {
+		log.Printf("IP allowlist: disabled")
+	}
+
 	cfg := server.Config{
 		ListenAddr:   rc.Listen,
 		CA:           ca,
@@ -194,6 +238,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		AuditLogger:  auditLogger,
 		AdminToken:   rc.AdminToken,
 		AdminTracker: tracker,
+		RateLimiter:  rateLimiter,
+		Allowlist:    ipAllowlist,
 	}
 
 	srv := server.New(cfg)
