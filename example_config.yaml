@@ -1,0 +1,31 @@
+issuer_url: https://oidc.home.une-tasse-de.cafe/application/o/talos-oidc/
+client_id: talosctl_oidc # Required
+
+# Talos Configuration
+# You can provide the CA via file paths OR inline data
+ca_cert: temp/talos-ca.crt
+ca_key: temp/talos-api-ca.key
+
+# Network Configuration
+listen: ":8443"
+endpoints:
+  - 192.168.0.42
+
+# Certificate Settings
+cert_ttl: "1h"
+roles:
+  - os:admin
+  - os:reader
+
+# TLS Configuration
+# tls_cert: temp/tls.crt
+# tls_key: temp/tls.key
+# or use insecure mode (not recommended for production)
+insecure: true
+
+# Persistence
+data_dir: ./temp/talosctl-oidc
+
+# Logging & Admin
+audit_log: ./temp/audit.log
+admin_token: my-secret-admin-token

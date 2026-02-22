@@ -100,8 +100,19 @@ func (c *Context) GetCertificateExpiry() (time.Time, error) {
 		return time.Time{}, fmt.Errorf("decoding certificate: %w", err)
 	}
 
-	block, _ := pem.Decode(decoded)
-	if block == nil {
+	var block *pem.Block
+	rest := decoded
+	for len(rest) > 0 {
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type == "CERTIFICATE" {
+			break
+		}
+	}
+
+	if block == nil || block.Type != "CERTIFICATE" {
 		return time.Time{}, fmt.Errorf("failed to parse certificate PEM")
 	}
 

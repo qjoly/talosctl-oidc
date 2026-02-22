@@ -150,7 +150,44 @@ yq '.machine.ca.key' controlplane.yaml | base64 -d > talos-ca.key
 
 ### 3. Start the server
 
-The `serve` command is configured entirely via environment variables (no CLI flags):
+The `serve` command can be configured via **environment variables** or a **YAML configuration file**. Environment variables take precedence over file values when both are set.
+
+#### Option A: Configuration File (Recommended)
+
+Create a `config.yaml` file and specify it with the `--config` flag:
+
+```bash
+talosctl-oidc serve --config config.yaml
+```
+
+**Example `config.yaml`:**
+
+```yaml
+issuer_url: https://idp.example.com/application/o/talos-oidc/
+client_id: your-client-id
+endpoints:
+  - 10.0.0.1
+  - 10.0.0.2
+ca_cert: talos-ca.crt
+ca_key: talos-ca.key
+listen: ":8443"
+cert_ttl: "1h"
+roles:
+  - os:admin
+```
+
+You can also set the config file path via the `TALOSCTL_OIDC_CONFIG` environment variable:
+
+```bash
+export TALOSCTL_OIDC_CONFIG=/etc/talosctl-oidc/config.yaml
+talosctl-oidc serve
+```
+
+> **Note:** See the [Configuration wiki page](https://github.com/qjoly/talosctl-oidc/wiki/Configuration) for complete documentation on config file options and precedence rules.
+
+#### Option B: Environment Variables
+
+Configure entirely via environment variables:
 
 ```bash
 export TALOSCTL_OIDC_CA_CERT=talos-ca.crt
@@ -226,32 +263,45 @@ talosctl --context oidc dashboard
 
 ### `serve`
 
-Start the certificate exchange server. All configuration is via environment variables.
+Start the certificate exchange server.
 
 ```bash
 talosctl-oidc serve
 ```
 
+#### Configuration
+
+The server can be configured via **YAML configuration file** or **environment variables**:
+
+- Use `--config <path>` flag or `TALOSCTL_OIDC_CONFIG` env var to specify a config file
+- Environment variables override config file values
+- See the [Configuration wiki page](https://github.com/qjoly/talosctl-oidc/wiki/Configuration) for details
+
 #### Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `TALOSCTL_OIDC_CA_CERT` | Yes | | Path to Talos CA certificate |
-| `TALOSCTL_OIDC_CA_KEY` | Yes | | Path to Talos CA private key |
-| `TALOSCTL_OIDC_ISSUER_URL` | Yes | | OIDC issuer URL for token validation |
-| `TALOSCTL_OIDC_CLIENT_ID` | Yes | | Expected OIDC client ID / audience |
-| `TALOSCTL_OIDC_ENDPOINTS` | Yes | | Talos node endpoints (comma-separated) |
-| `TALOSCTL_OIDC_CLIENT_SECRET` | No | | OIDC client secret (for HS256-signed tokens) |
-| `TALOSCTL_OIDC_LISTEN` | No | `:8443` | Address to listen on |
-| `TALOSCTL_OIDC_CERT_TTL` | No | `1h` | Lifetime of issued client certificates |
-| `TALOSCTL_OIDC_ROLES` | No | `os:admin` | Talos roles (comma-separated) |
-| `TALOSCTL_OIDC_TLS_CERT` | No | | Path to TLS certificate (HTTPS with provided cert) |
-| `TALOSCTL_OIDC_TLS_KEY` | No | | Path to TLS private key (must be set with TLS_CERT) |
-| `TALOSCTL_OIDC_INSECURE` | No | `false` | Set to `true` to serve plain HTTP |
-| `TALOSCTL_OIDC_DATA_DIR` | No | | Directory to persist self-signed TLS certs across restarts |
-| `TALOSCTL_OIDC_AUDIT_LOG` | No | stdout | Path to audit log file (`-` for stdout) |
-| `TALOSCTL_OIDC_ADMIN_TOKEN` | No | | Bearer token to protect `/admin/*` endpoints (required to enable admin API) |
-| `DEBUG` | No | | Set to any value to enable detailed debug logging |
+| Variable | Config File Field | Required | Default | Description |
+|----------|-------------------|----------|---------|-------------|
+| `TALOSCTL_OIDC_CA_CERT` | `ca_cert` | Yes* | | Path to Talos CA certificate |
+| `TALOSCTL_OIDC_CA_KEY` | `ca_key` | Yes* | | Path to Talos CA private key |
+| `TALOSCTL_OIDC_CA_CERT_DATA` | `ca_cert_data` | Yes* | | Inline PEM-encoded CA certificate |
+| `TALOSCTL_OIDC_CA_KEY_DATA` | `ca_key_data` | Yes* | | Inline PEM-encoded CA private key |
+| `TALOSCTL_OIDC_TALOS_CONFIG` | `talos_config` | Yes* | | Path to talosconfig YAML file |
+| `TALOSCTL_OIDC_ISSUER_URL` | `issuer_url` | Yes | | OIDC issuer URL for token validation |
+| `TALOSCTL_OIDC_CLIENT_ID` | `client_id` | Yes | | Expected OIDC client ID / audience |
+| `TALOSCTL_OIDC_ENDPOINTS` | `endpoints` | Yes | | Talos node endpoints (comma-separated) |
+| `TALOSCTL_OIDC_CLIENT_SECRET` | `client_secret` | No | | OIDC client secret (for HS256-signed tokens) |
+| `TALOSCTL_OIDC_LISTEN` | `listen` | No | `:8443` | Address to listen on |
+| `TALOSCTL_OIDC_CERT_TTL` | `cert_ttl` | No | `1h` | Lifetime of issued client certificates |
+| `TALOSCTL_OIDC_ROLES` | `roles` | No | `os:admin` | Talos roles (comma-separated) |
+| `TALOSCTL_OIDC_TLS_CERT` | `tls_cert` | No | | Path to TLS certificate (HTTPS with provided cert) |
+| `TALOSCTL_OIDC_TLS_KEY` | `tls_key` | No | | Path to TLS private key (must be set with TLS_CERT) |
+| `TALOSCTL_OIDC_INSECURE` | `insecure` | No | `false` | Set to `true` to serve plain HTTP |
+| `TALOSCTL_OIDC_DATA_DIR` | `data_dir` | No | | Directory to persist self-signed TLS certs across restarts |
+| `TALOSCTL_OIDC_AUDIT_LOG` | `audit_log` | No | stdout | Path to audit log file (`-` for stdout) |
+| `TALOSCTL_OIDC_ADMIN_TOKEN` | `admin_token` | No | | Bearer token to protect `/admin/*` endpoints (required to enable admin API) |
+| `DEBUG` | — | No | | Set to any value to enable detailed debug logging |
+
+\* *Either CA files, inline CA data, or talos_config is required*
 
 #### TLS Modes
 
