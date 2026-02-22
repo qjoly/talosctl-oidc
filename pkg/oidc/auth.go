@@ -10,7 +10,17 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	_ "embed"
 )
+
+//go:embed assets/talos-logo.png
+var talosLogo []byte
+
+func handleLogo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/png")
+	w.Write(talosLogo)
+}
 
 func debug(format string, v ...interface{}) {
 	if os.Getenv("DEBUG") != "" {
@@ -49,6 +59,7 @@ func NewCallbackServer(port int) (*CallbackServer, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", cs.handleCallback)
+	mux.HandleFunc("/logo", handleLogo)
 
 	cs.server = &http.Server{
 		Handler:      mux,
@@ -114,12 +125,99 @@ func (cs *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "text/html")
 	fmt.Fprint(w, `<!DOCTYPE html>
-<html>
-<head><title>talosctl-oidc</title></head>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authentication Successful - talosctl-oidc</title>
+    <style>
+        :root {
+            --bg-color: #f5f5f5;
+            --card-bg: white;
+            --text-primary: #1a1a2e;
+            --text-secondary: #666;
+            --shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-color: #1a1a2e;
+                --card-bg: #2d2d44;
+                --text-primary: #f5f5f5;
+                --text-secondary: #a0a0a0;
+                --shadow: 0 4px 12px rgba(0,0,0,0.3);
+            }
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-color);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.3s ease, color 0.3s ease;
+        }
+        
+        .card {
+            background: var(--card-bg);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            padding: 2.5rem;
+            text-align: center;
+            max-width: 400px;
+            width: 90%;
+            transition: background 0.3s ease, box-shadow 0.3s ease;
+        }
+        
+        .icon {
+            width: 64px;
+            height: 64px;
+            background: #1a1a2e;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1.5rem;
+        }
+        
+        .icon img {
+            width: 48px;
+            height: 48px;
+        }
+        
+        h1 {
+            color: var(--text-primary);
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        
+        p {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+    </style>
+</head>
 <body>
-<h1>Authentication successful</h1>
-<p>You can close this window and return to your terminal.</p>
-<script>setTimeout(function() { window.close(); }, 3000);</script>
+    <div class="card">
+        <div class="icon">
+            <img src="/logo" alt="Talos" style="width: 48px; height: 48px;">
+        </div>
+        <h1>Authentication Successful</h1>
+        <p>You can now return to your terminal.</p>
+    </div>
+    <script>
+        setTimeout(function() { window.close(); }, 3000);
+    </script>
 </body>
 </html>`)
 }
