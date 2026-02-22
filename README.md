@@ -53,17 +53,67 @@ sequenceDiagram
 
 ## Installation
 
+### curl (recommended)
+
+The quickest way to install on Linux or macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/qjoly/talosctl-oidc/main/install.sh | sh
+```
+
+The script:
+- Detects your OS and architecture automatically
+- Fetches the latest release from GitHub
+- Verifies the SHA-256 checksum before installing
+- Installs to `/usr/local/bin` (falls back to `~/.local/bin` if not writable)
+
+**Install a specific version:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/qjoly/talosctl-oidc/main/install.sh | VERSION=v0.0.2 sh
+```
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew install qjoly/tap/talosctl-oidc
+```
+
+The formula is updated automatically on every release.
+
+### Go install
+
+If you have Go installed:
+
+```bash
+go install github.com/qjoly/talosctl-oidc@latest
+```
+
+### Manual download
+
+Download the binary for your platform directly from the [releases page](https://github.com/qjoly/talosctl-oidc/releases/latest):
+
+| OS | Architecture | Binary |
+|----|-------------|--------|
+| Linux | x86-64 | `talosctl-oidc-linux-amd64` |
+| Linux | ARM64 | `talosctl-oidc-linux-arm64` |
+| macOS | Intel | `talosctl-oidc-darwin-amd64` |
+| macOS | Apple Silicon (M1/M2/M3) | `talosctl-oidc-darwin-arm64` |
+| Windows | x86-64 | `talosctl-oidc-windows-amd64.exe` |
+
+```bash
+# Example: Linux amd64
+curl -fsSL https://github.com/qjoly/talosctl-oidc/releases/latest/download/talosctl-oidc-linux-amd64 \
+  -o /usr/local/bin/talosctl-oidc
+chmod +x /usr/local/bin/talosctl-oidc
+```
+
 ### From source
 
 ```bash
 git clone https://github.com/qjoly/talosctl-oidc.git
 cd talosctl-oidc
 go build -o talosctl-oidc .
-```
-
-Move the binary to a directory in your `$PATH`:
-
-```bash
 sudo mv talosctl-oidc /usr/local/bin/
 ```
 
