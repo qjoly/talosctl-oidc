@@ -555,7 +555,6 @@ kubectl create secret generic talosctl-oidc-ca \
 ```bash
 helm install talosctl-oidc charts/talosctl-oidc/ \
   --namespace talos-system --create-namespace \
-  --set talos.apiAccess.enabled=false \
   --set talos.caSecretName=talosctl-oidc-ca \
   --set "talos.caSecretKeys.cert=talos-ca.crt" \
   --set "talos.caSecretKeys.key=talos-ca.key" \
@@ -563,23 +562,6 @@ helm install talosctl-oidc charts/talosctl-oidc/ \
   --set config.clientId=your-client-id \
   --set "config.endpoints={10.0.0.1,10.0.0.2}"
 ```
-
-#### Option C — Talos API Access from Kubernetes
-
-If your cluster has the [`kubernetesTalosAPIAccess`](https://www.talos.dev/latest/kubernetes-guides/advanced-guides/talos-api-access-from-k8s/) feature enabled, Talos can provision the CA automatically via a `talos.dev/v1alpha1` ServiceAccount. Enable it in the chart:
-
-```bash
-helm install talosctl-oidc charts/talosctl-oidc/ \
-  --namespace talos-system --create-namespace \
-  --set talos.apiAccess.enabled=true \
-  --set config.issuerUrl=https://idp.example.com/application/o/talos-oidc/ \
-  --set config.clientId=your-client-id \
-  --set "config.endpoints={10.0.0.1,10.0.0.2}"
-```
-
-> **Option C does not work and is kept for reference only.**
-> 
-> The `kubernetesTalosAPIAccess` ServiceAccount provisions a talosconfig containing a *client* certificate and key — not the CA private key. This server needs the CA private key to sign new ephemeral client certificates. Talos never exposes the CA private key through this mechanism. Use Option A or Option B instead.
 
 ### 3. Key chart values
 
@@ -593,7 +575,6 @@ helm install talosctl-oidc charts/talosctl-oidc/ \
 | `config.certTTL` | `1h` | Lifetime of issued client certificates |
 | `config.adminToken` | `""` | Bearer token to enable the admin API |
 | `config.auditLog` | `-` | Audit log destination (`-` for stdout) |
-| `talos.apiAccess.enabled` | `false` | Use Talos API Access from Kubernetes (see Option C note) |
 | `talos.caCertData` | `""` | Inline Talos CA certificate PEM |
 | `talos.caKeyData` | `""` | Inline Talos CA private key PEM |
 | `talos.caSecretName` | `""` | Name of an existing Secret with the CA |
