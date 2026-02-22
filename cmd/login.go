@@ -31,18 +31,17 @@ func debug(format string, v ...interface{}) {
 }
 
 var loginFlags struct {
-	provider         string
-	clientID         string
-	clientSecret     string
-	clientSecretFile string
-	scopes           []string
-	callbackPort     int
-	serverURL        string
-	contextName      string
-	talosconfig      string
-	serverCA         string
-	insecure         bool
-	watch            bool
+	provider     string
+	clientID     string
+	clientSecret string
+	scopes       []string
+	callbackPort int
+	serverURL    string
+	contextName  string
+	talosconfig  string
+	serverCA     string
+	insecure     bool
+	watch        bool
 }
 
 var loginCmd = &cobra.Command{
@@ -60,8 +59,7 @@ When the certificate expires, you must re-authenticate via OIDC.`,
 func init() {
 	loginCmd.Flags().StringVar(&loginFlags.provider, "provider", "", "OIDC issuer URL (required)")
 	loginCmd.Flags().StringVar(&loginFlags.clientID, "client-id", "", "OIDC client ID (required)")
-	loginCmd.Flags().StringVar(&loginFlags.clientSecret, "client-secret", "", "OIDC client secret (optional, for confidential clients). Prefer using --client-secret-file or TALOSCTL_OIDC_CLIENT_SECRET env var to avoid exposure in process list.")
-	loginCmd.Flags().StringVar(&loginFlags.clientSecretFile, "client-secret-file", "", "Path to file containing OIDC client secret (alternative to --client-secret)")
+	loginCmd.Flags().StringVar(&loginFlags.clientSecret, "client-secret", "", "OIDC client secret (optional, for confidential clients)")
 	loginCmd.Flags().StringSliceVar(&loginFlags.scopes, "scopes", []string{"openid", "profile", "email", "offline_access"}, "OIDC scopes")
 	loginCmd.Flags().IntVar(&loginFlags.callbackPort, "callback-port", 8900, "Local callback server port")
 	loginCmd.Flags().StringVar(&loginFlags.serverURL, "server", "", "Cert exchange server URL (required, e.g. https://localhost:8443)")
@@ -80,25 +78,13 @@ func init() {
 
 func runLogin(cmd *cobra.Command, args []string) error {
 	debug("Login command started")
-
-	clientSecret := loginFlags.clientSecret
-	if clientSecret == "" {
-		if envSecret := os.Getenv("TALOSCTL_OIDC_CLIENT_SECRET"); envSecret != "" {
-			clientSecret = envSecret
-			debug("Using client secret from TALOSCTL_OIDC_CLIENT_SECRET env var")
-		} else if loginFlags.clientSecretFile != "" {
-			secretBytes, err := os.ReadFile(loginFlags.clientSecretFile)
-			if err != nil {
-				return fmt.Errorf("reading client secret file: %w", err)
-			}
-			clientSecret = string(bytes.TrimSpace(secretBytes))
-			debug("Using client secret from file: %s", loginFlags.clientSecretFile)
-		}
-	}
-
 	talosconfigPath := loginFlags.talosconfig
 	if talosconfigPath == "" {
-		talosconfigPath = talosconfig.DefaultPath()
+		var err error
+		talosconfigPath, err = talosconfig.DefaultPath()
+		if err != nil {
+			return err
+		}
 	}
 	debug("Using talosconfig path: %s", talosconfigPath)
 
@@ -153,11 +139,11 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		}
 
 		// Step 1: Authenticate via OIDC to get an ID token.
-		idToken, err := obtainIDToken(ctx, clientSecret)
+		idToken, err := obtainIDToken(ctx)
 		if err != nil {
 			cancel()
 			if loginFlags.watch {
-				fmt.Fprintf(os.Stderr, "Renewal failed: %v. Retrying in 1 minute...\n", err)
+				fmt.Printf("Renewal failed: %v. Retrying in 1 minute...\n", err)
 				time.Sleep(1 * time.Minute)
 				continue
 			}
@@ -177,7 +163,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			cancel()
 			if loginFlags.watch {
-				fmt.Fprintf(os.Stderr, "Cert exchange failed: %v. Retrying in 1 minute...\n", err)
+				fmt.Printf("Cert exchange failed: %v. Retrying in 1 minute...\n", err)
 				time.Sleep(1 * time.Minute)
 				continue
 			}
@@ -270,11 +256,11 @@ func buildHTTPClient() (*http.Client, error) {
 }
 
 // obtainIDToken performs the OIDC flow (or uses cached token) and returns the ID token string.
-func obtainIDToken(ctx context.Context, clientSecret string) (string, error) {
+func obtainIDToken(ctx context.Context) (string, error) {
 	// Check for cached token in keychain.
 	storedToken, err := keychain.Retrieve(loginFlags.contextName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not check keychain/file: %v\n", err)
+		fmt.Printf("Warning: could not check keychain/file: %v\n", err)
 	}
 
 	// If we have a valid cached token with an ID token, use it.
@@ -284,7 +270,7 @@ func obtainIDToken(ctx context.Context, clientSecret string) (string, error) {
 			return storedToken.IDToken, nil
 		}
 		if storedToken.IsExpired() {
-			fmt.Fprintf(os.Stderr, "Cached OIDC token expired at %s\n", storedToken.ExpiresAt.Format(time.RFC3339))
+			fmt.Printf("Cached OIDC token expired at %s\n", storedToken.ExpiresAt.Format(time.RFC3339))
 		}
 	} else {
 		fmt.Println("No cached OIDC token found.")
@@ -296,11 +282,11 @@ func obtainIDToken(ctx context.Context, clientSecret string) (string, error) {
 
 		provider, err := oidc.Discover(ctx, storedToken.Issuer)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Discovery failed during refresh: %v\nFalling back to full authentication.\n", err)
+			fmt.Printf("Discovery failed during refresh: %v\nFalling back to full authentication.\n", err)
 		} else {
-			tokenResp, err := oidc.RefreshAccessToken(ctx, provider, storedToken.ClientID, clientSecret, storedToken.RefreshToken, loginFlags.scopes)
+			tokenResp, err := oidc.RefreshAccessToken(ctx, provider, storedToken.ClientID, loginFlags.clientSecret, storedToken.RefreshToken, loginFlags.scopes)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Token refresh failed: %v\nFalling back to full authentication.\n", err)
+				fmt.Printf("Token refresh failed: %v\nFalling back to full authentication.\n", err)
 			} else {
 				refreshedToken := &oidc.StoredToken{
 					AccessToken:  tokenResp.AccessToken,
@@ -319,7 +305,7 @@ func obtainIDToken(ctx context.Context, clientSecret string) (string, error) {
 				}
 
 				if err := keychain.Store(loginFlags.contextName, refreshedToken); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: could not cache refreshed token: %v\n", err)
+					fmt.Printf("Warning: could not cache refreshed token: %v\n", err)
 				}
 				fmt.Println("Token refreshed successfully.")
 
@@ -340,7 +326,7 @@ func obtainIDToken(ctx context.Context, clientSecret string) (string, error) {
 	authCfg := oidc.AuthConfig{
 		IssuerURL:    loginFlags.provider,
 		ClientID:     loginFlags.clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: loginFlags.clientSecret,
 		Scopes:       loginFlags.scopes,
 		CallbackPort: loginFlags.callbackPort,
 		OpenBrowser:  openBrowser,
@@ -352,7 +338,7 @@ func obtainIDToken(ctx context.Context, clientSecret string) (string, error) {
 	}
 
 	if err := keychain.Store(loginFlags.contextName, storedToken); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not cache token in keychain: %v\n", err)
+		fmt.Printf("Warning: could not cache token in keychain: %v\n", err)
 	}
 
 	fmt.Println("Authentication successful.")
@@ -362,10 +348,12 @@ func obtainIDToken(ctx context.Context, clientSecret string) (string, error) {
 	}
 
 	if storedToken.RefreshToken == "" {
-		fmt.Fprintf(os.Stderr, "Warning: OIDC provider did not return a refresh token.\n")
+		fmt.Printf("Warning: OIDC provider did not return a refresh token.\n")
 		debug("Requested scopes: %v", authCfg.Scopes)
-		fmt.Fprintf(os.Stderr, "Without a refresh token, automatic background renewal is not possible.\n")
-		fmt.Fprintf(os.Stderr, "Ensure your OIDC provider supports 'offline_access' and it is enabled for this client.\n")
+		// We don't have the granted scopes here easily without changing the return type of Authenticate,
+		// but the debug logs in pkg/oidc will show it now.
+		fmt.Printf("Without a refresh token, automatic background renewal is not possible.\n")
+		fmt.Printf("Ensure your OIDC provider supports 'offline_access' and it is enabled for this client.\n")
 	}
 
 	return storedToken.IDToken, nil

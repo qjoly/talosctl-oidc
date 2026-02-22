@@ -266,10 +266,7 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isLoggedIn {
-		if s.cfg.AdminTracker == nil {
-			writeError(w, http.StatusInternalServerError, "tracker not initialized")
-			return
-		}
+		// Get stats and certs from tracker
 		data.Stats = s.cfg.AdminTracker.GetStats()
 		data.Certs = s.cfg.AdminTracker.ActiveCerts()
 	}

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -33,12 +32,16 @@ func init() {
 func runLogout(cmd *cobra.Command, args []string) error {
 	talosconfigPath := logoutFlags.talosconfig
 	if talosconfigPath == "" {
-		talosconfigPath = talosconfig.DefaultPath()
+		var err error
+		talosconfigPath, err = talosconfig.DefaultPath()
+		if err != nil {
+			return err
+		}
 	}
 
 	// Delete token from keychain and file cache.
 	if err := keychain.Delete(logoutFlags.contextName); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not clear cached token: %v\n", err)
+		fmt.Printf("Warning: could not clear cached token: %v\n", err)
 	} else {
 		fmt.Println("Cached token cleared.")
 	}
