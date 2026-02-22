@@ -100,7 +100,20 @@ func ParseCA(certPEM, keyPEM []byte) (*CA, error) {
 		return nil, fmt.Errorf("certificate is not a CA")
 	}
 
-	keyBlock, _ := pem.Decode(keyPEM)
+	var keyBlock *pem.Block
+	keyRest := keyPEM
+	for len(keyRest) > 0 {
+		block, remaining := pem.Decode(keyRest)
+		if block == nil {
+			break
+		}
+		if block.Type == "PRIVATE KEY" || block.Type == "RSA PRIVATE KEY" || block.Type == "EC PRIVATE KEY" || block.Type == "ED25519 PRIVATE KEY" {
+			keyBlock = block
+			break
+		}
+		keyRest = remaining
+	}
+
 	if keyBlock == nil {
 		return nil, fmt.Errorf("failed to decode CA private key PEM")
 	}
