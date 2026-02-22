@@ -1,6 +1,7 @@
 package certsign
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -156,6 +157,22 @@ func ParseCA(certPEM, keyPEM []byte) (*CA, error) {
 	signer, ok := privKey.(crypto.Signer)
 	if !ok {
 		return nil, fmt.Errorf("private key does not implement crypto.Signer")
+	}
+
+	// Validate that the private key matches the certificate's public key.
+	// x509.CreateCertificate enforces this too, but catching it here at load
+	// time gives a much clearer error message than "PrivateKey doesn't match
+	// parent's PublicKey" surfacing on the first certificate request.
+	certPubDER, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling CA certificate public key: %w", err)
+	}
+	signerPubDER, err := x509.MarshalPKIXPublicKey(signer.Public())
+	if err != nil {
+		return nil, fmt.Errorf("marshaling CA private key's public key: %w", err)
+	}
+	if !bytes.Equal(certPubDER, signerPubDER) {
+		return nil, fmt.Errorf("CA private key does not match CA certificate public key: the cert and key are from different key pairs")
 	}
 
 	return &CA{
