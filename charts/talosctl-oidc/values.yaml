@@ -135,7 +135,10 @@ config:
     - "os:admin"
 
   # TALOSCTL_OIDC_CERT_TTL
-  certTTL: "1h"
+  # Short TTL is the primary revocation compensating control (ISO 27001 A.9.2.6).
+  # Pair with --watch on the client for seamless auto-renewal.
+  # Recommended range: 5m–10m. Lower values reduce exposure but increase exchange frequency.
+  certTTL: "5m"
 
   # TALOSCTL_OIDC_ADMIN_TOKEN (Optional)
   adminToken: ""

@@ -258,10 +258,11 @@ func (rc *ResolvedConfig) ApplyDefaults() {
 }
 
 // ParseCertTTL parses the CertTTL string into a time.Duration.
-// Returns 1h if empty.
+// Returns 5m if empty. A short default TTL limits exposure from compromised
+// certificates (ISO 27001 A.9.2.6 compensating control — see SEC-3).
 func (rc *ResolvedConfig) ParseCertTTL() (time.Duration, error) {
 	if rc.CertTTL == "" {
-		return 1 * time.Hour, nil
+		return 5 * time.Minute, nil
 	}
 	d, err := time.ParseDuration(rc.CertTTL)
 	if err != nil {

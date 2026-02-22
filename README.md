@@ -11,7 +11,7 @@ Talos Linux uses **mTLS (mutual TLS) with client certificates** for API authenti
 1. A **server** (`talosctl-oidc serve`) holds the Talos CA private key and runs alongside the cluster (as a Talos extension or standalone)
 2. A **user** runs `talosctl-oidc login`, which opens a browser for OIDC authentication (Authorization Code + PKCE)
 3. The client sends the resulting ID token to the server
-4. The server validates the token (signature, issuer, audience, expiry) and signs an **ephemeral short-lived client certificate** (e.g., 1 hour)
+4. The server validates the token (signature, issuer, audience, expiry) and signs an **ephemeral short-lived client certificate** (default: 5 minutes)
 5. The client writes the certificate to `~/.talos/config` (using atomic updates to prevent corruption)
 6. Before expiry, the client can proactively renew the certificate using the OIDC refresh token, either on demand or in the background via the `--watch` flag
 
@@ -171,7 +171,7 @@ endpoints:
 ca_cert: talos-ca.crt
 ca_key: talos-ca.key
 listen: ":8443"
-cert_ttl: "1h"
+cert_ttl: "5m"
 
 # Static roles — used when RBAC is disabled or no rule matches.
 # Set to [] to deny access when no RBAC rule matches.
@@ -220,7 +220,7 @@ export TALOSCTL_OIDC_ISSUER_URL=https://idp.example.com/application/o/talos-oidc
 export TALOSCTL_OIDC_CLIENT_ID=<your-client-id>
 export TALOSCTL_OIDC_ENDPOINTS=10.0.0.1,10.0.0.2
 export TALOSCTL_OIDC_LISTEN=:8443
-export TALOSCTL_OIDC_CERT_TTL=1h
+export TALOSCTL_OIDC_CERT_TTL=5m
 export TALOSCTL_OIDC_ROLES=os:admin
 
 talosctl-oidc serve
@@ -315,7 +315,7 @@ The server can be configured via **YAML configuration file** or **environment va
 | `TALOSCTL_OIDC_ENDPOINTS` | `endpoints` | Yes | | Talos node endpoints (comma-separated) |
 | `TALOSCTL_OIDC_CLIENT_SECRET` | `client_secret` | No | | OIDC client secret (for HS256-signed tokens) |
 | `TALOSCTL_OIDC_LISTEN` | `listen` | No | `:8443` | Address to listen on |
-| `TALOSCTL_OIDC_CERT_TTL` | `cert_ttl` | No | `1h` | Lifetime of issued client certificates |
+| `TALOSCTL_OIDC_CERT_TTL` | `cert_ttl` | No | `5m` | Lifetime of issued client certificates |
 | `TALOSCTL_OIDC_ROLES` | `roles` | No | `os:admin` | Talos roles (comma-separated) |
 | `TALOSCTL_OIDC_TLS_CERT` | `tls_cert` | No | | Path to TLS certificate (HTTPS with provided cert) |
 | `TALOSCTL_OIDC_TLS_KEY` | `tls_key` | No | | Path to TLS private key (must be set with TLS_CERT) |
@@ -513,7 +513,7 @@ environment:
   - TALOSCTL_OIDC_ISSUER_URL=https://idp.example.com/application/o/talos-oidc/
   - TALOSCTL_OIDC_CLIENT_ID=your-client-id
   - TALOSCTL_OIDC_ENDPOINTS=10.0.0.1,10.0.0.2
-  - TALOSCTL_OIDC_CERT_TTL=1h
+  - TALOSCTL_OIDC_CERT_TTL=5m
   - TALOSCTL_OIDC_ROLES=os:admin
   - TALOSCTL_OIDC_DATA_DIR=/var/lib/talosctl-oidc
 ```
@@ -652,7 +652,7 @@ helm install talosctl-oidc charts/talosctl-oidc/ \
 | `config.clientSecret` | `""` | OIDC client secret (optional) |
 | `config.endpoints` | `[]` | Talos node endpoints (required) |
 | `config.roles` | `[os:admin]` | Talos roles for issued certs |
-| `config.certTTL` | `1h` | Lifetime of issued client certificates |
+| `config.certTTL` | `5m` | Lifetime of issued client certificates |
 | `config.adminToken` | `""` | Bearer token to enable the admin API |
 | `config.auditLog` | `-` | Audit log destination (`-` for stdout) |
 | `talos.caCertData` | `""` | Inline Talos CA certificate PEM |
@@ -801,7 +801,7 @@ TALOSCTL_OIDC_CA_KEY=/etc/talosctl-oidc/ca.key
 TALOSCTL_OIDC_ISSUER_URL=https://idp.example.com/application/o/talos-oidc/
 TALOSCTL_OIDC_CLIENT_ID=your-client-id
 TALOSCTL_OIDC_ENDPOINTS=10.0.0.1,10.0.0.2
-TALOSCTL_OIDC_CERT_TTL=1h
+TALOSCTL_OIDC_CERT_TTL=5m
 TALOSCTL_OIDC_ROLES=os:admin
 TALOSCTL_OIDC_DATA_DIR=/var/lib/talosctl-oidc
 TALOSCTL_OIDC_AUDIT_LOG=/var/log/talosctl-oidc/audit.log
@@ -958,7 +958,7 @@ export TALOSCTL_OIDC_AUDIT_LOG=/var/log/talosctl-oidc/audit.log
 ### Example Events
 
 ```json
-{"timestamp":"2026-02-17T14:30:00Z","type":"cert_issued","subject":"abc123","email":"user@example.com","issuer":"https://idp.example.com/","client_ip":"192.168.1.10:52431","roles":["os:admin"],"cert_ttl":"1h0m0s","cert_expiry":"2026-02-17T15:30:00Z"}
+{"timestamp":"2026-02-17T14:30:00Z","type":"cert_issued","subject":"abc123","email":"user@example.com","issuer":"https://idp.example.com/","client_ip":"192.168.1.10:52431","roles":["os:admin"],"cert_ttl":"5m0s","cert_expiry":"2026-02-17T14:35:00Z"}
 {"timestamp":"2026-02-17T14:31:00Z","type":"auth_failure","client_ip":"10.0.0.5:48291","error":"token expired"}
 ```
 
@@ -1256,7 +1256,7 @@ Dex passes group membership from upstream connectors in the `groups` claim as a 
 ## Security Considerations
 
 - **TLS by default**: The server generates a self-signed TLS certificate at startup when no TLS configuration is provided. Plain HTTP requires explicitly setting `TALOSCTL_OIDC_INSECURE=true`
-- **Ephemeral certificates**: Client certificates are short-lived (default 1 hour). Users cannot extend or forge certificates without re-authenticating
+- **Ephemeral certificates**: Client certificates are short-lived (default 5 minutes). Users cannot extend or forge certificates without re-authenticating
 - **CA key isolation**: The Talos CA private key is held only by the server, never exposed to clients
 - **PKCE is mandatory**: The OIDC flow uses S256 challenge method, protecting against authorization code interception
 - **OIDC tokens are stored in the system keychain**, encrypted at rest by the operating system
@@ -1267,6 +1267,30 @@ Dex passes group membership from upstream connectors in the `groups` claim as a 
 - **Audit logging** provides a tamper-evident record of all authentication events for compliance and security monitoring
 - **Rate limiting** can be configured to prevent brute-force attacks on the `/exchange` endpoint (disabled by default)
 - **IP allowlisting** can restrict access to specific networks or IP addresses (disabled by default)
+
+### Certificate Revocation Strategy (ISO 27001 A.9.2.6)
+
+Talos does not support CRL (Certificate Revocation List) or OCSP checks on client certificates. This means a compromised certificate cannot be invalidated before it expires. This is addressed through the following layered compensating controls:
+
+| Control | Mechanism | Effect |
+|---|---|---|
+| **Short certificate TTL** | Set `cert_ttl` to 5–10 minutes (default: `5m`) | A compromised certificate becomes invalid within minutes without any action |
+| **Auto-renewal via `--watch`** | Client renews automatically before expiry using the cached refresh token | Short TTLs are transparent to the user |
+| **IdP refresh token revocation** | Revoke the user's refresh token in your OIDC provider | Prevents the client from obtaining a new certificate after the current one expires |
+
+**Recommended response to a compromised credential:**
+
+1. Immediately revoke the user's **refresh token** (and/or session) in your OIDC provider. This stops the `--watch` loop and any subsequent `login` from successfully renewing the certificate.
+2. The existing certificate remains usable for at most the configured `cert_ttl` (default 5 minutes).
+3. Optionally, lower `cert_ttl` to `1m` or less in your server configuration for higher-sensitivity environments. Note that this increases the frequency of cert-exchange requests.
+
+**How to revoke in common IdPs:**
+
+- **Authentik**: Admin → Directory → Users → select user → Sessions → Revoke all, or revoke the specific token under Tokens
+- **Keycloak**: Admin Console → Users → select user → Sessions → Log Out, or use the Token Introspection / Revocation API
+- **Dex**: Revoke through the upstream connector (Dex itself has no revocation endpoint)
+
+This strategy is documented as a compensating control for ISO 27001 A.9.2.6 (removal or adjustment of access rights). The combination of a short TTL and IdP revocation provides an effective access removal window bounded by the certificate TTL.
 
 ## Debugging
 
