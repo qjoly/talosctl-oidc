@@ -214,12 +214,22 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Log in to GHCR (Helm)
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             helm registry login ${{ env.REGISTRY }} \
               --username ${{ github.actor }} \
               --password-stdin
+
+      - name: Setup crane
+        uses: imjasonh/setup-crane@v0.5
 
       - name: Package Helm chart
         run: |
@@ -235,12 +245,7 @@ jobs:
       - name: Re-tag chart as latest
         if: steps.vars.outputs.is_release == 'true'
         run: |
-          # Pull the manifest we just pushed, re-tag it as :latest
-          # crane is not available here; use ORAS (ships with the runner) or a second helm push trick.
-          # Helm OCI does not support re-tagging natively, so we use crane.
-          curl -sL https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_x86_64.tar.gz \
-            | tar -xz crane
-          ./crane tag \
+          crane tag \
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/talosctl-oidc:${{ steps.vars.outputs.chart_version }} \
             latest
 
