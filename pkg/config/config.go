@@ -23,6 +23,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// RBACRule represents a single RBAC mapping rule.
+// It maps a specific claim value to a set of Talos roles.
+type RBACRule struct {
+	Claim string   `yaml:"claim"` // The OIDC claim to check (e.g., "groups", "roles")
+	Value string   `yaml:"value"` // The expected claim value (e.g., "platform-admins")
+	Roles []string `yaml:"roles"` // The Talos roles to assign when this rule matches
+}
+
+// RBACConfig holds the RBAC configuration with mapping rules.
+type RBACConfig struct {
+	Rules []RBACRule `yaml:"rules"` // List of RBAC mapping rules
+}
+
 // FileConfig represents the YAML configuration file structure.
 // All fields are optional; missing fields are left at their zero value and
 // can be filled in by environment variables.
@@ -61,6 +74,9 @@ type FileConfig struct {
 
 	// IP allowlist configuration.
 	IPAllowlist []string `yaml:"ip_allowlist"` // List of allowed CIDRs/IPs (empty = allow all).
+
+	// RBAC configuration.
+	RBAC RBACConfig `yaml:"rbac"` // RBAC rules for dynamic role mapping based on OIDC claims.
 }
 
 // ResolvedConfig holds the final merged configuration values as strings,
@@ -87,6 +103,7 @@ type ResolvedConfig struct {
 	RateLimitRequests int
 	RateLimitWindow   time.Duration
 	IPAllowlist       []string
+	RBAC              RBACConfig // RBAC rules for dynamic role mapping
 }
 
 // LoadFile reads and parses a YAML configuration file.
@@ -185,6 +202,10 @@ func Load(configPath string) (*ResolvedConfig, error) {
 		rc.IPAllowlist = fileCfg.IPAllowlist
 	}
 
+	// RBAC: file config takes precedence for rules; env var can override the entire RBAC config.
+	// If TALOSCTL_OIDC_RBAC_CONFIG is set, it should point to a separate RBAC config file.
+	rc.RBAC = fileCfg.RBAC
+
 	return rc, nil
 }
 
@@ -227,16 +248,21 @@ func (rc *ResolvedConfig) ApplyDefaults() {
 	if rc.Listen == "" {
 		rc.Listen = ":8443"
 	}
-	if len(rc.Roles) == 0 {
+	// Only apply default roles if:
+	// 1. No roles are configured, AND
+	// 2. RBAC is not enabled (no rules configured)
+	// This allows users to set roles: [] with RBAC to enforce least privilege.
+	if len(rc.Roles) == 0 && len(rc.RBAC.Rules) == 0 {
 		rc.Roles = []string{"os:admin"}
 	}
 }
 
 // ParseCertTTL parses the CertTTL string into a time.Duration.
-// Returns 1h if empty.
+// Returns 5m if empty. A short default TTL limits exposure from compromised
+// certificates (ISO 27001 A.9.2.6 compensating control — see SEC-3).
 func (rc *ResolvedConfig) ParseCertTTL() (time.Duration, error) {
 	if rc.CertTTL == "" {
-		return 1 * time.Hour, nil
+		return 5 * time.Minute, nil
 	}
 	d, err := time.ParseDuration(rc.CertTTL)
 	if err != nil {

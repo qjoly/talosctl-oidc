@@ -17,6 +17,7 @@ import (
 	"github.com/qjoly/talosctl-oidc/pkg/certsign"
 	"github.com/qjoly/talosctl-oidc/pkg/config"
 	"github.com/qjoly/talosctl-oidc/pkg/ratelimit"
+	"github.com/qjoly/talosctl-oidc/pkg/rbac"
 	"github.com/qjoly/talosctl-oidc/pkg/server"
 )
 
@@ -222,6 +223,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 		log.Printf("IP allowlist: disabled")
 	}
 
+	// Initialize RBAC mapper if rules are configured.
+	var rbacMapper *rbac.Mapper
+	if len(rc.RBAC.Rules) > 0 {
+		rbacMapper = rbac.NewMapper(rc.RBAC.Rules, rc.Roles)
+		log.Printf("RBAC: enabled (%d rules, default roles: %v)", len(rc.RBAC.Rules), rc.Roles)
+	} else {
+		log.Printf("RBAC: disabled (using static roles: %v)", rc.Roles)
+	}
+
 	cfg := server.Config{
 		ListenAddr:   rc.Listen,
 		CA:           ca,
@@ -240,6 +250,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		AdminTracker: tracker,
 		RateLimiter:  rateLimiter,
 		Allowlist:    ipAllowlist,
+		RBACMapper:   rbacMapper,
 	}
 
 	srv := server.New(cfg)

@@ -29,6 +29,7 @@ import (
 	"github.com/qjoly/talosctl-oidc/pkg/certsign"
 	"github.com/qjoly/talosctl-oidc/pkg/oidc"
 	"github.com/qjoly/talosctl-oidc/pkg/ratelimit"
+	"github.com/qjoly/talosctl-oidc/pkg/rbac"
 )
 
 func debug(format string, v ...interface{}) {
@@ -100,6 +101,11 @@ type Config struct {
 	// Allowlist is an optional IP allowlist for the /exchange endpoint.
 	// When non-nil, only IPs in the allowlist can access the endpoint.
 	Allowlist *allowlist.Allowlist
+
+	// RBACMapper is an optional RBAC mapper for dynamic role assignment
+	// based on OIDC claims. When non-nil, roles are determined dynamically
+	// instead of using the static Roles field.
+	RBACMapper *rbac.Mapper
 }
 
 // CertResponse is the JSON response returned to clients after successful token exchange.
@@ -526,9 +532,25 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		ClientIP: clientIP,
 	})
 
-	debug("Generating ephemeral client certificate for roles: %v", s.cfg.Roles)
+	// Determine roles: use RBAC mapper if configured, otherwise use static roles.
+	var roles []string
+	if s.cfg.RBACMapper != nil && s.cfg.RBACMapper.HasRules() {
+		roles = s.cfg.RBACMapper.MapRoles(tc.Claims)
+		debug("RBAC mapper assigned roles: %v", roles)
+	} else {
+		roles = s.cfg.Roles
+		debug("Using static roles: %v", roles)
+	}
+
+	// Ensure we always have at least one role.
+	if len(roles) == 0 {
+		writeError(w, http.StatusForbidden, "no roles assigned - user does not match any RBAC rules")
+		return
+	}
+
+	debug("Generating ephemeral client certificate for roles: %v", roles)
 	// Generate ephemeral client certificate.
-	clientCert, err := certsign.GenerateClientCert(s.cfg.CA, s.cfg.Roles, s.cfg.CertTTL)
+	clientCert, err := certsign.GenerateClientCert(s.cfg.CA, roles, s.cfg.CertTTL)
 	if err != nil {
 		debug("Certificate generation failed: %v", err)
 		log.Printf("Certificate generation failed: %v", err)
@@ -563,12 +585,12 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		Email:      tc.Email,
 		Issuer:     tc.Issuer,
 		ClientIP:   clientIP,
-		Roles:      s.cfg.Roles,
+		Roles:      roles,
 		CertTTL:    s.cfg.CertTTL.String(),
 		CertExpiry: certExpiry,
 	})
 
-	log.Printf("Issued ephemeral certificate (TTL: %s)", s.cfg.CertTTL)
+	log.Printf("Issued ephemeral certificate (TTL: %s, Roles: %v)", s.cfg.CertTTL, roles)
 }
 
 // tokenClaims holds extracted identity information from a validated token.
@@ -576,6 +598,7 @@ type tokenClaims struct {
 	Subject string
 	Email   string
 	Issuer  string
+	Claims  map[string]interface{} // All claims from the token for RBAC evaluation
 }
 
 // validateToken verifies the OIDC ID token against the provider.
@@ -610,7 +633,9 @@ func (s *Server) validateToken(ctx context.Context, idToken string) (*tokenClaim
 	}
 	debug("ID token verification successful")
 
-	tc := &tokenClaims{}
+	tc := &tokenClaims{
+		Claims: claims, // Store all claims for RBAC evaluation
+	}
 	if sub, ok := claims["sub"].(string); ok {
 		tc.Subject = sub
 	}
