@@ -34,7 +34,11 @@ func init() {
 func runStatus(cmd *cobra.Command, args []string) error {
 	talosconfigPath := statusFlags.talosconfig
 	if talosconfigPath == "" {
-		talosconfigPath = talosconfig.DefaultPath()
+		var err error
+		talosconfigPath, err = talosconfig.DefaultPath()
+		if err != nil {
+			return err
+		}
 	}
 
 	fmt.Printf("Context: %s\n", statusFlags.contextName)

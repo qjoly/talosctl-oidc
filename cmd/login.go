@@ -80,7 +80,11 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	debug("Login command started")
 	talosconfigPath := loginFlags.talosconfig
 	if talosconfigPath == "" {
-		talosconfigPath = talosconfig.DefaultPath()
+		var err error
+		talosconfigPath, err = talosconfig.DefaultPath()
+		if err != nil {
+			return err
+		}
 	}
 	debug("Using talosconfig path: %s", talosconfigPath)
 

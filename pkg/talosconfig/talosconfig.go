@@ -29,12 +29,12 @@ type Context struct {
 }
 
 // DefaultPath returns the default talosconfig path.
-func DefaultPath() string {
+func DefaultPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	return filepath.Join(home, ".talos", "config")
+	return filepath.Join(home, ".talos", "config"), nil
 }
 
 // Load reads and parses a talosconfig file.
