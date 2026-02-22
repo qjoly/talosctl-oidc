@@ -172,6 +172,9 @@ ca_cert: talos-ca.crt
 ca_key: talos-ca.key
 listen: ":8443"
 cert_ttl: "1h"
+
+# Static roles — used when RBAC is disabled or no rule matches.
+# Set to [] to deny access when no RBAC rule matches.
 roles:
   - os:admin
 
@@ -183,6 +186,18 @@ rate_limit_window: "1m"
 ip_allowlist:
   - 192.168.1.0/24
   - 10.0.0.50
+
+# Optional: Dynamic RBAC — map OIDC claims to Talos roles
+# rbac:
+#   rules:
+#     - claim: groups
+#       value: platform-admins
+#       roles:
+#         - os:admin
+#     - claim: groups
+#       value: developers
+#       roles:
+#         - os:reader
 ```
 
 You can also set the config file path via the `TALOSCTL_OIDC_CONFIG` environment variable:
@@ -311,7 +326,7 @@ The server can be configured via **YAML configuration file** or **environment va
 | `TALOSCTL_OIDC_RATE_LIMIT_REQUESTS` | `rate_limit_requests` | No | `0` | Max requests per IP per window (0 = disabled) |
 | `TALOSCTL_OIDC_RATE_LIMIT_WINDOW` | `rate_limit_window` | No | `1m` | Rate limit time window (e.g., `1m`, `5m`, `1h`) |
 | `TALOSCTL_OIDC_IP_ALLOWLIST` | `ip_allowlist` | No | | Comma-separated list of allowed IPs/CIDRs (empty = allow all) |
-| `DEBUG` | — | No | | Set to any value to enable detailed debug logging |
+| `DEBUG` | — | No | | Set to any value to enable detailed debug logging (includes RBAC rule evaluation) |
 
 \* *Either CA files, inline CA data, or talos_config is required*
 
@@ -1110,6 +1125,133 @@ config:
     - 192.168.1.0/24
     - 10.0.0.50
 ```
+
+## Role-Based Access Control (RBAC)
+
+By default, every authenticated user receives the same static set of roles configured in `roles`. RBAC lets you map OIDC token claims (such as group membership) to different Talos roles dynamically, so users get only the permissions they need.
+
+### How It Works
+
+When RBAC rules are configured, the server evaluates each rule against the claims in the validated ID token. Rules are checked in order; **all** matching rules' roles are combined (union). If no rule matches, the user receives the static `roles` list as a fallback.
+
+If `roles` is empty **and** RBAC is enabled but no rules match, the exchange request is rejected with `403 Forbidden` — enforcing least-privilege by default.
+
+### Configuration
+
+Add an `rbac` block to your `config.yaml`:
+
+```yaml
+# Fallback roles when no RBAC rule matches.
+# Set to [] to deny access when no rule matches.
+roles: []
+
+rbac:
+  rules:
+    # Users in the 'platform-admins' OIDC group get full admin access.
+    - claim: groups
+      value: platform-admins
+      roles:
+        - os:admin
+
+    # Users in the 'developers' group get read-only access.
+    - claim: groups
+      value: developers
+      roles:
+        - os:reader
+
+    # A separate claim can also be used (e.g., a custom 'department' claim).
+    - claim: department
+      value: sre
+      roles:
+        - os:admin
+```
+
+### Supported Claim Types
+
+The RBAC engine handles multiple ways OIDC providers encode claim values:
+
+| Claim format | Example | Behaviour |
+|---|---|---|
+| String | `"platform-admins"` | Exact match |
+| Space-separated string | `"group1 group2"` | Splits on whitespace and checks each token |
+| JSON array of strings | `["platform-admins","developers"]` | Checks each element |
+
+### RBAC Rules Reference
+
+Each rule under `rbac.rules` has three fields:
+
+| Field | Required | Description |
+|---|---|---|
+| `claim` | Yes | The OIDC claim name to inspect (e.g. `groups`, `roles`, `email`) |
+| `value` | Yes | The expected value that must appear in the claim |
+| `roles` | Yes | Talos roles to grant when this rule matches |
+
+### Available Talos Roles
+
+| Role | Description |
+|---|---|
+| `os:admin` | Full administrative access to all Talos API operations |
+| `os:reader` | Read-only access (inspect nodes, services, config) |
+| `os:etcd:backup` | Permission to trigger etcd backups |
+
+### Interaction with Static `roles`
+
+| RBAC configured | Rule matched | Result |
+|---|---|---|
+| No | — | Static `roles` applied to all users |
+| Yes | Yes | Matched rules' roles applied (static `roles` ignored) |
+| Yes | No | Static `roles` applied as fallback |
+| Yes | No | **403 Forbidden** if `roles: []` is also empty |
+
+### Debugging RBAC
+
+Set `DEBUG=1` on the server to see per-rule evaluation in the logs:
+
+```
+[DEBUG] [RBAC] Evaluating 3 RBAC rules against claims
+[DEBUG] [RBAC] Rule 1: checking claim 'groups' = '[platform-admins developers]' against expected value 'platform-admins'
+[DEBUG] [RBAC]   -> checking []interface{} with 2 items
+[DEBUG] [RBAC]     item 0: platform-admins
+[DEBUG] [RBAC]     -> MATCH at index 0
+[DEBUG] [RBAC] Rule 1: MATCH! Assigning roles: [os:admin]
+[DEBUG] [RBAC] RBAC evaluation complete. Assigned roles: [os:admin]
+```
+
+### Provider-specific Notes
+
+#### Authentik
+
+Authentik sends group membership as a JSON array of strings in the `groups` claim. The group name is the full display name configured in Authentik (e.g. `"authentik Admins"` — note the space is part of the name, not a separator):
+
+```yaml
+rbac:
+  rules:
+    - claim: groups
+      value: "authentik Admins"
+      roles:
+        - os:admin
+```
+
+#### Keycloak
+
+Keycloak can send roles as an array in `roles` or as realm/client roles nested under `realm_access.roles`. Use the top-level `roles` claim if you configure it as a mapper, or use a custom claim name:
+
+```yaml
+rbac:
+  rules:
+    - claim: roles
+      value: talos-admin
+      roles:
+        - os:admin
+```
+
+#### Dex
+
+Dex passes group membership from upstream connectors in the `groups` claim as a string array. Configuration is the same as the standard example above.
+
+> **Note:** See the [RBAC wiki page](https://github.com/qjoly/talosctl-oidc/wiki/RBAC) for more detailed examples and troubleshooting.
+
+---
 
 ## Security Considerations
 

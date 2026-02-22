@@ -22,9 +22,32 @@ endpoints:
 
 # Certificate Settings
 cert_ttl: "1h"
-roles:
-  - os:admin
-  - os:reader
+
+# Static roles (used as fallback when RBAC is disabled or no rules match)
+roles: []
+
+# RBAC Configuration - Dynamic role mapping based on OIDC claims
+# When RBAC is configured, roles are assigned based on OIDC token claims
+# instead of using the static 'roles' list above.
+#
+# Example: Map OIDC groups to Talos roles
+# - Users in 'platform-admins' group get 'os:admin' role
+# - Users in 'developers' group get 'os:reader' role
+# - Users matching no rules get the default roles from the 'roles' list
+rbac:
+  rules:
+    - claim: groups
+      value: platform-admins
+      roles:
+        - os:admin
+    - claim: groups
+      value: Tech
+      roles:
+        - os:reader
+    - claim: groups
+      value: auditors
+      roles:
+        - os:reader
 
 # TLS Configuration
 # tls_cert: temp/tls.crt

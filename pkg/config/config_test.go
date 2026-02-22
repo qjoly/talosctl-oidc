@@ -334,6 +334,39 @@ func TestResolvedConfig_ApplyDefaults_NoOverride(t *testing.T) {
 	}
 }
 
+func TestResolvedConfig_ApplyDefaults_EmptyRolesWithRBAC(t *testing.T) {
+	// When RBAC is enabled and roles is empty, default should NOT be applied
+	// This allows enforcing least privilege - unmatched users get 403
+	rc := &ResolvedConfig{
+		Roles: []string{}, // Explicitly empty
+		RBAC: RBACConfig{
+			Rules: []RBACRule{
+				{Claim: "groups", Value: "admins", Roles: []string{"os:admin"}},
+			},
+		},
+	}
+	rc.ApplyDefaults()
+
+	// Roles should remain empty when RBAC is configured
+	if len(rc.Roles) != 0 {
+		t.Errorf("Roles = %v, want [] (should NOT apply default when RBAC is enabled)", rc.Roles)
+	}
+}
+
+func TestResolvedConfig_ApplyDefaults_EmptyRolesNoRBAC(t *testing.T) {
+	// When RBAC is NOT enabled and roles is empty, default SHOULD be applied
+	rc := &ResolvedConfig{
+		Roles: []string{},             // Explicitly empty
+		RBAC:  RBACConfig{Rules: nil}, // No RBAC rules
+	}
+	rc.ApplyDefaults()
+
+	// Default roles should be applied when no RBAC
+	if len(rc.Roles) != 1 || rc.Roles[0] != "os:admin" {
+		t.Errorf("Roles = %v, want [os:admin] (should apply default when RBAC is disabled)", rc.Roles)
+	}
+}
+
 func TestResolvedConfig_ParseCertTTL(t *testing.T) {
 	tests := []struct {
 		name    string
