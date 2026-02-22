@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Talosctl OIDC Admin Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .header {
+            background: #1a1a2e;
+            color: white;
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+        
+        .logout-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.875rem;
+            transition: background 0.2s;
+        }
+        
+        .logout-btn:hover {
+            background: #c82333;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            border-left: 4px solid #e32f4b;
+        }
+        
+        .stat-card h3 {
+            font-size: 0.875rem;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.5rem;
+        }
+        
+        .stat-card .value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #1a1a2e;
+        }
+        
+        .stat-card.success {
+            border-left-color: #28a745;
+        }
+        
+        .stat-card.warning {
+            border-left-color: #ffc107;
+        }
+        
+        .stat-card.error {
+            border-left-color: #dc3545;
+        }
+        
+        .section {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 2rem;
+            overflow: hidden;
+        }
+        
+        .section-header {
+            padding: 1.25rem 1.5rem;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .section-header h2 {
+            font-size: 1.25rem;
+            color: #1a1a2e;
+        }
+        
+        .refresh-btn {
+            background: #e32f4b;
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.875rem;
+            transition: background 0.2s;
+        }
+
+        .refresh-btn:hover {
+            background: #b4253c;
+        }
+        
+        .table-container {
+            overflow-x: auto;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th, td {
+            text-align: left;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid #eee;
+        }
+        
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #666;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .badge-success {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .badge-warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .badge-info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        
+        .empty-state {
+            padding: 3rem;
+            text-align: center;
+            color: #666;
+        }
+        
+        .empty-state svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+        
+        .server-info {
+            background: #f8f9fa;
+            padding: 1rem 1.5rem;
+            border-top: 1px solid #eee;
+            font-size: 0.875rem;
+            color: #666;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #28a745;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .roles-list {
+            display: flex;
+            gap: 0.25rem;
+            flex-wrap: wrap;
+        }
+
+        /* Login form styles */
+        .login-container {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        }
+        
+        .login-box {
+            background: white;
+            padding: 2.5rem;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            width: 100%;
+            max-width: 400px;
+        }
+        
+        .login-box h2 {
+            color: #1a1a2e;
+            margin-bottom: 0.5rem;
+            font-size: 1.75rem;
+        }
+        
+        .login-box .subtitle {
+            color: #666;
+            margin-bottom: 2rem;
+            font-size: 0.95rem;
+        }
+        
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #333;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        
+        .form-group input {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 1rem;
+            transition: border-color 0.2s;
+        }
+        
+        .form-group input:focus {
+            outline: none;
+            border-color: #e32f4b;
+        }
+
+        .login-btn {
+            width: 100%;
+            padding: 0.875rem;
+            background: #e32f4b;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .login-btn:hover {
+            background: #b4253c;
+        }
+        
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 0.875rem;
+            border-radius: 6px;
+            margin-bottom: 1.5rem;
+            border-left: 4px solid #dc3545;
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .logo svg {
+            width: 64px;
+            height: 64px;
+            color: #e32f4b;
+        }
+    </style>
+</head>
+<body>
+    {{if .LoggedIn}}
+    <div class="header">
+        <h1>Talosctl OIDC Admin Dashboard</h1>
+        <form method="POST" action="/admin/logout" style="margin: 0;">
+            <button type="submit" class="logout-btn">Logout</button>
+        </form>
+    </div>
+    
+    <div class="container">
+        <!-- Stats Cards -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Uptime</h3>
+                <div class="value">{{.Stats.Uptime}}</div>
+            </div>
+            <div class="stat-card success">
+                <h3>Active Sessions</h3>
+                <div class="value">{{.Stats.ActiveCerts}}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Total Certs Issued</h3>
+                <div class="value">{{.Stats.TotalCertsIssued}}</div>
+            </div>
+            <div class="stat-card success">
+                <h3>Auth Successes</h3>
+                <div class="value">{{.Stats.TotalAuthSuccesses}}</div>
+            </div>
+            <div class="stat-card warning">
+                <h3>Auth Failures</h3>
+                <div class="value">{{.Stats.TotalAuthFailures}}</div>
+            </div>
+            <div class="stat-card error">
+                <h3>Cert Errors</h3>
+                <div class="value">{{.Stats.TotalCertErrors}}</div>
+            </div>
+        </div>
+        
+        <!-- Active Sessions Section -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Active Sessions</h2>
+                <button class="refresh-btn" onclick="location.reload()">Refresh</button>
+            </div>
+            
+            {{if .Certs}}
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Subject</th>
+                            <th>Email</th>
+                            <th>Roles</th>
+                            <th>Client IP</th>
+                            <th>Issued At</th>
+                            <th>Expires At</th>
+                            <th>TTL</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Certs}}
+                        <tr>
+                            <td><code>{{.Subject}}</code></td>
+                            <td>{{.Email}}</td>
+                            <td>
+                                <div class="roles-list">
+                                    {{range .Roles}}
+                                    <span class="badge badge-info">{{.}}</span>
+                                    {{end}}
+                                </div>
+                            </td>
+                            <td><code>{{.ClientIP}}</code></td>
+                            <td>{{.IssuedAt.Format "2006-01-02 15:04:05"}}</td>
+                            <td>{{.ExpiresAt.Format "2006-01-02 15:04:05"}}</td>
+                            <td>{{.TTL}}</td>
+                            <td><span class="badge badge-success">Active</span></td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+            {{else}}
+            <div class="empty-state">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <p>No active sessions found</p>
+            </div>
+            {{end}}
+            
+            <div class="server-info">
+                <div>
+                    <span class="status-badge">
+                        <span class="status-dot"></span>
+                        Server Online
+                    </span>
+                    <span style="margin-left: 1rem;">Started: {{.Stats.StartedAt.Format "2006-01-02 15:04:05 UTC"}}</span>
+                </div>
+                <div>Last updated: {{.CurrentTime.Format "2006-01-02 15:04:05 UTC"}}</div>
+            </div>
+        </div>
+    </div>
+    {{else}}
+    <div class="login-container">
+        <div class="login-box">
+            <div class="logo">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+            </div>
+            <h2>Admin Login</h2>
+            <p class="subtitle">Enter your admin token to access the dashboard</p>
+            
+            {{if .Error}}
+            <div class="error-message">
+                {{.Error}}
+            </div>
+            {{end}}
+            
+            <form method="POST" action="/admin/login">
+                <div class="form-group">
+                    <label for="token">Admin Token</label>
+                    <input type="password" id="token" name="token" placeholder="Enter your admin token" required autofocus>
+                </div>
+                <button type="submit" class="login-btn">Sign In</button>
+            </form>
+        </div>
+    </div>
+    {{end}}
+</body>
+</html>

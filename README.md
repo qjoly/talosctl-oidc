@@ -2,7 +2,7 @@
 
 OIDC certificate exchange server and client for [Talos Linux](https://www.talos.dev/). Enables OIDC-based access control for `talosctl` by issuing ephemeral short-lived client certificates signed by the Talos CA.
 
-![Cover](./cover.png)
+![Cover](./assets/cover.png)
 
 ## How It Works
 
@@ -42,7 +42,7 @@ sequenceDiagram
 
 ## Demo
 
-![Demo](./demo.gif)
+![Demo](./assets/demo.gif)
 
 ## Prerequisites
 
@@ -336,6 +336,9 @@ don't need to update their `--server-ca` file.
 | `/exchange` | POST | Exchange an OIDC ID token for an ephemeral certificate |
 | `/healthz` | GET | Health check (returns `200 OK`) |
 | `/ca` | GET | Returns the self-signed CA PEM (only in self-signed mode) |
+| `/admin/` | GET | Web dashboard with session-based auth |
+| `/admin/login` | POST | Login form submission |
+| `/admin/logout` | POST | Logout and clear session |
 | `/admin/stats` | GET | Server statistics (requires `Authorization: Bearer <admin-token>`) |
 | `/admin/certs` | GET | List active (non-expired) issued certs (requires `Authorization: Bearer <admin-token>`) |
 
@@ -1020,6 +1023,32 @@ curl -s -H "Authorization: Bearer $TALOSCTL_OIDC_ADMIN_TOKEN" \
 ```
 
 Expired certificates are automatically pruned from the list on each request.
+
+### Web Dashboard
+
+The server provides a web-based admin dashboard for visual monitoring. Navigate to `/admin/` in your browser:
+
+![Admin Dashboard showing uptime, active sessions, auth successes/failures, and a table of active certificates with user details and expiry times](assets/image.png)
+
+```
+https://localhost:8443/admin/
+```
+
+The dashboard provides:
+- **Login page** with token-based authentication
+- **Real-time statistics** showing uptime, active sessions, auth successes/failures
+- **Active sessions table** with user details, roles, and certificate expiry
+- **Auto-refresh** capability and logout functionality
+
+Sessions are maintained via HTTP-only cookies with a 24-hour timeout.
+
+**Example:**
+
+1. Open `https://localhost:8443/admin/` in your browser
+2. Enter your admin token when prompted
+3. View the dashboard with all statistics and active sessions
+
+The API endpoints (`/admin/stats` and `/admin/certs`) continue to accept Bearer tokens for programmatic access.
 
 ## Rate Limiting and IP Allowlist
 
