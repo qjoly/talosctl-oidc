@@ -124,6 +124,9 @@ type Server struct {
 	// selfSignedCAPEM holds the PEM-encoded CA certificate when using self-signed TLS mode.
 	// Exposed via the /ca endpoint so clients can fetch it.
 	selfSignedCAPEM []byte
+
+	// adminSessions tracks active web dashboard sessions
+	adminSessions *sessionStore
 }
 
 // New creates a new cert exchange server.
@@ -147,6 +150,11 @@ func New(cfg Config) *Server {
 
 	// Admin endpoints (only registered when a tracker is configured).
 	if cfg.AdminTracker != nil {
+		// Web dashboard with session-based auth
+		mux.HandleFunc("/admin/", s.handleAdminDashboard)
+		mux.HandleFunc("/admin/login", s.handleAdminLogin)
+		mux.HandleFunc("/admin/logout", s.handleAdminLogout)
+		// API endpoints with Bearer token auth
 		mux.HandleFunc("/admin/stats", s.requireAdminToken(s.handleAdminStats))
 		mux.HandleFunc("/admin/certs", s.requireAdminToken(s.handleAdminCerts))
 	}
