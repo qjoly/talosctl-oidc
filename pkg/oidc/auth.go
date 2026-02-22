@@ -169,7 +169,9 @@ func Authenticate(ctx context.Context, cfg AuthConfig) (*StoredToken, error) {
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		callbackServer.Shutdown(shutdownCtx)
+		if err := callbackServer.Shutdown(shutdownCtx); err != nil {
+			debug("Callback server shutdown error: %v", err)
+		}
 		debug("Callback server shut down")
 	}()
 
