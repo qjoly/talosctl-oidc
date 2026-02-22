@@ -139,7 +139,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			cancel()
 			if loginFlags.watch {
-				fmt.Printf("Renewal failed: %v. Retrying in 1 minute...\n", err)
+				fmt.Fprintf(os.Stderr, "Renewal failed: %v. Retrying in 1 minute...\n", err)
 				time.Sleep(1 * time.Minute)
 				continue
 			}
@@ -159,7 +159,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			cancel()
 			if loginFlags.watch {
-				fmt.Printf("Cert exchange failed: %v. Retrying in 1 minute...\n", err)
+				fmt.Fprintf(os.Stderr, "Cert exchange failed: %v. Retrying in 1 minute...\n", err)
 				time.Sleep(1 * time.Minute)
 				continue
 			}
@@ -256,7 +256,7 @@ func obtainIDToken(ctx context.Context) (string, error) {
 	// Check for cached token in keychain.
 	storedToken, err := keychain.Retrieve(loginFlags.contextName)
 	if err != nil {
-		fmt.Printf("Warning: could not check keychain/file: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: could not check keychain/file: %v\n", err)
 	}
 
 	// If we have a valid cached token with an ID token, use it.
@@ -266,7 +266,7 @@ func obtainIDToken(ctx context.Context) (string, error) {
 			return storedToken.IDToken, nil
 		}
 		if storedToken.IsExpired() {
-			fmt.Printf("Cached OIDC token expired at %s\n", storedToken.ExpiresAt.Format(time.RFC3339))
+			fmt.Fprintf(os.Stderr, "Cached OIDC token expired at %s\n", storedToken.ExpiresAt.Format(time.RFC3339))
 		}
 	} else {
 		fmt.Println("No cached OIDC token found.")
@@ -278,11 +278,11 @@ func obtainIDToken(ctx context.Context) (string, error) {
 
 		provider, err := oidc.Discover(ctx, storedToken.Issuer)
 		if err != nil {
-			fmt.Printf("Discovery failed during refresh: %v\nFalling back to full authentication.\n", err)
+			fmt.Fprintf(os.Stderr, "Discovery failed during refresh: %v\nFalling back to full authentication.\n", err)
 		} else {
 			tokenResp, err := oidc.RefreshAccessToken(ctx, provider, storedToken.ClientID, loginFlags.clientSecret, storedToken.RefreshToken, loginFlags.scopes)
 			if err != nil {
-				fmt.Printf("Token refresh failed: %v\nFalling back to full authentication.\n", err)
+				fmt.Fprintf(os.Stderr, "Token refresh failed: %v\nFalling back to full authentication.\n", err)
 			} else {
 				refreshedToken := &oidc.StoredToken{
 					AccessToken:  tokenResp.AccessToken,
@@ -301,7 +301,7 @@ func obtainIDToken(ctx context.Context) (string, error) {
 				}
 
 				if err := keychain.Store(loginFlags.contextName, refreshedToken); err != nil {
-					fmt.Printf("Warning: could not cache refreshed token: %v\n", err)
+					fmt.Fprintf(os.Stderr, "Warning: could not cache refreshed token: %v\n", err)
 				}
 				fmt.Println("Token refreshed successfully.")
 
@@ -334,7 +334,7 @@ func obtainIDToken(ctx context.Context) (string, error) {
 	}
 
 	if err := keychain.Store(loginFlags.contextName, storedToken); err != nil {
-		fmt.Printf("Warning: could not cache token in keychain: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: could not cache token in keychain: %v\n", err)
 	}
 
 	fmt.Println("Authentication successful.")
@@ -344,12 +344,10 @@ func obtainIDToken(ctx context.Context) (string, error) {
 	}
 
 	if storedToken.RefreshToken == "" {
-		fmt.Printf("Warning: OIDC provider did not return a refresh token.\n")
+		fmt.Fprintf(os.Stderr, "Warning: OIDC provider did not return a refresh token.\n")
 		debug("Requested scopes: %v", authCfg.Scopes)
-		// We don't have the granted scopes here easily without changing the return type of Authenticate,
-		// but the debug logs in pkg/oidc will show it now.
-		fmt.Printf("Without a refresh token, automatic background renewal is not possible.\n")
-		fmt.Printf("Ensure your OIDC provider supports 'offline_access' and it is enabled for this client.\n")
+		fmt.Fprintf(os.Stderr, "Without a refresh token, automatic background renewal is not possible.\n")
+		fmt.Fprintf(os.Stderr, "Ensure your OIDC provider supports 'offline_access' and it is enabled for this client.\n")
 	}
 
 	return storedToken.IDToken, nil

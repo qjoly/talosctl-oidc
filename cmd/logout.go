@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -37,7 +38,7 @@ func runLogout(cmd *cobra.Command, args []string) error {
 
 	// Delete token from keychain and file cache.
 	if err := keychain.Delete(logoutFlags.contextName); err != nil {
-		fmt.Printf("Warning: could not clear cached token: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: could not clear cached token: %v\n", err)
 	} else {
 		fmt.Println("Cached token cleared.")
 	}

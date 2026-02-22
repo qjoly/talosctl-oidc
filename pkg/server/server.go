@@ -710,6 +710,11 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.cfg.AdminTracker == nil {
+		writeError(w, http.StatusInternalServerError, "tracker not initialized")
+		return
+	}
+
 	stats := s.cfg.AdminTracker.GetStats()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
@@ -722,6 +727,11 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminCerts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if s.cfg.AdminTracker == nil {
+		writeError(w, http.StatusInternalServerError, "tracker not initialized")
 		return
 	}
 
