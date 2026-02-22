@@ -24,4 +24,4 @@ IMPORTANT:
 This chart deploys talosctl-oidc.
 You must ensure that the Talos CA certificate and key are provided via 'talos.caSecretName' or 'talos.caCert'/'talos.caKey' values.
 
-If you have enabled Ingress with TLS, the application is running in INSECURE mode (HTTP) internally to allow the Ingress Controller to handle TLS termination.
+If you have enabled Ingress with TLS, the application is running in secure mode (HTTPS); TLS is handled by the Ingress Controller according to its configuration.
