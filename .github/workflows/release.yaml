@@ -219,11 +219,11 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.CR_PAT }}
 
       - name: Log in to GHCR (Helm)
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | \
+          echo "${{ secrets.CR_PAT }}" | \
             helm registry login ${{ env.REGISTRY }} \
               --username ${{ github.actor }} \
               --password-stdin
