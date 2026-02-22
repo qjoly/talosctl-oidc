@@ -109,10 +109,12 @@ config:
   insecure: false
 
   # TALOSCTL_OIDC_ISSUER_URL (Required)
-  issuerUrl: "https://oidc.home.une-tasse-de.cafe/application/o/talos-oidc"
+  # Example: "https://your-issuer.example.com/application/o/talos-oidc"
+  issuerUrl: ""
 
   # TALOSCTL_OIDC_CLIENT_ID (Required)
-  clientId: "Mh3sbRbUpgPKKH0PUJceQ3l42wmkkJjmlGfgkEDz"
+  # Example: "your-client-id"
+  clientId: ""
 
   # TALOSCTL_OIDC_CLIENT_SECRET (Optional)
   clientSecret: ""
