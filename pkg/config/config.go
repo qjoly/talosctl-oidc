@@ -54,29 +54,39 @@ type FileConfig struct {
 	// Audit & admin configuration.
 	AuditLog   string `yaml:"audit_log"`   // Path to audit log file.
 	AdminToken string `yaml:"admin_token"` // Bearer token for /admin/* endpoints.
+
+	// Rate limiting configuration.
+	RateLimitRequests int           `yaml:"rate_limit_requests"` // Requests per window (default: 0 = disabled).
+	RateLimitWindow   time.Duration `yaml:"rate_limit_window"`   // Rate limit window (default: 1m).
+
+	// IP allowlist configuration.
+	IPAllowlist []string `yaml:"ip_allowlist"` // List of allowed CIDRs/IPs (empty = allow all).
 }
 
 // ResolvedConfig holds the final merged configuration values as strings,
 // ready for validation and conversion in the serve command.
 type ResolvedConfig struct {
-	CACert       string
-	CAKey        string
-	CACertData   string
-	CAKeyData    string
-	TalosConfig  string
-	IssuerURL    string
-	ClientID     string
-	ClientSecret string
-	Listen       string
-	Endpoints    []string
-	CertTTL      string
-	Roles        []string
-	TLSCert      string
-	TLSKey       string
-	Insecure     bool
-	DataDir      string
-	AuditLog     string
-	AdminToken   string
+	CACert            string
+	CAKey             string
+	CACertData        string
+	CAKeyData         string
+	TalosConfig       string
+	IssuerURL         string
+	ClientID          string
+	ClientSecret      string
+	Listen            string
+	Endpoints         []string
+	CertTTL           string
+	Roles             []string
+	TLSCert           string
+	TLSKey            string
+	Insecure          bool
+	DataDir           string
+	AuditLog          string
+	AdminToken        string
+	RateLimitRequests int
+	RateLimitWindow   time.Duration
+	IPAllowlist       []string
 }
 
 // LoadFile reads and parses a YAML configuration file.
@@ -153,6 +163,26 @@ func Load(configPath string) (*ResolvedConfig, error) {
 		rc.Insecure = strings.EqualFold(envInsecure, "true") || envInsecure == "1"
 	} else {
 		rc.Insecure = fileCfg.Insecure
+	}
+
+	// Rate limiting: env var > file.
+	rc.RateLimitRequests = fileCfg.RateLimitRequests
+	if envRateLimit := os.Getenv("TALOSCTL_OIDC_RATE_LIMIT_REQUESTS"); envRateLimit != "" {
+		fmt.Sscanf(envRateLimit, "%d", &rc.RateLimitRequests)
+	}
+
+	rc.RateLimitWindow = fileCfg.RateLimitWindow
+	if envWindow := os.Getenv("TALOSCTL_OIDC_RATE_LIMIT_WINDOW"); envWindow != "" {
+		if d, err := time.ParseDuration(envWindow); err == nil {
+			rc.RateLimitWindow = d
+		}
+	}
+
+	// IP allowlist: env var (comma-separated) > file.
+	if envAllowlist := os.Getenv("TALOSCTL_OIDC_IP_ALLOWLIST"); envAllowlist != "" {
+		rc.IPAllowlist = strings.Split(envAllowlist, ",")
+	} else if len(fileCfg.IPAllowlist) > 0 {
+		rc.IPAllowlist = fileCfg.IPAllowlist
 	}
 
 	return rc, nil

@@ -174,6 +174,15 @@ listen: ":8443"
 cert_ttl: "1h"
 roles:
   - os:admin
+
+# Optional: Rate limiting (disabled by default)
+rate_limit_requests: 10
+rate_limit_window: "1m"
+
+# Optional: IP allowlist (empty = allow all)
+ip_allowlist:
+  - 192.168.1.0/24
+  - 10.0.0.50
 ```
 
 You can also set the config file path via the `TALOSCTL_OIDC_CONFIG` environment variable:
@@ -299,6 +308,9 @@ The server can be configured via **YAML configuration file** or **environment va
 | `TALOSCTL_OIDC_DATA_DIR` | `data_dir` | No | | Directory to persist self-signed TLS certs across restarts |
 | `TALOSCTL_OIDC_AUDIT_LOG` | `audit_log` | No | stdout | Path to audit log file (`-` for stdout) |
 | `TALOSCTL_OIDC_ADMIN_TOKEN` | `admin_token` | No | | Bearer token to protect `/admin/*` endpoints (required to enable admin API) |
+| `TALOSCTL_OIDC_RATE_LIMIT_REQUESTS` | `rate_limit_requests` | No | `0` | Max requests per IP per window (0 = disabled) |
+| `TALOSCTL_OIDC_RATE_LIMIT_WINDOW` | `rate_limit_window` | No | `1m` | Rate limit time window (e.g., `1m`, `5m`, `1h`) |
+| `TALOSCTL_OIDC_IP_ALLOWLIST` | `ip_allowlist` | No | | Comma-separated list of allowed IPs/CIDRs (empty = allow all) |
 | `DEBUG` | — | No | | Set to any value to enable detailed debug logging |
 
 \* *Either CA files, inline CA data, or talos_config is required*
@@ -1009,6 +1021,67 @@ curl -s -H "Authorization: Bearer $TALOSCTL_OIDC_ADMIN_TOKEN" \
 
 Expired certificates are automatically pruned from the list on each request.
 
+## Rate Limiting and IP Allowlist
+
+The server supports optional rate limiting and IP allowlisting on the `/exchange` endpoint to protect against abuse and brute-force attacks.
+
+### Rate Limiting
+
+Rate limiting is **disabled by default**. When enabled, it applies a per-IP sliding window limit to the `/exchange` endpoint.
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `rate_limit_requests` | Maximum requests allowed per IP per window | `0` (disabled) |
+| `rate_limit_window` | Time window for counting requests | `1m` |
+
+**Configuration via environment variables:**
+```bash
+export TALOSCTL_OIDC_RATE_LIMIT_REQUESTS=10
+export TALOSCTL_OIDC_RATE_LIMIT_WINDOW=1m
+```
+
+**Configuration via config file:**
+```yaml
+rate_limit_requests: 10
+rate_limit_window: "1m"
+```
+
+**Example:** Allow 10 requests per minute per IP. Additional requests receive `429 Too Many Requests` with a `Retry-After` header.
+
+### IP Allowlist
+
+IP allowlisting restricts access to the `/exchange` endpoint to specific IP addresses or CIDR ranges.
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `ip_allowlist` | List of allowed IPs or CIDR ranges | (empty = allow all) |
+
+**Configuration via environment variables:**
+```bash
+export TALOSCTL_OIDC_IP_ALLOWLIST="192.168.1.0/24,10.0.0.50,172.16.0.0/16"
+```
+
+**Configuration via config file:**
+```yaml
+ip_allowlist:
+  - 192.168.1.0/24
+  - 10.0.0.50
+  - 172.16.0.0/16
+```
+
+**Note:** The server respects the `X-Forwarded-For` header for determining client IP when running behind a reverse proxy. Requests from IPs not in the allowlist receive `403 Forbidden`.
+
+### Helm Chart Configuration
+
+```yaml
+config:
+  rateLimitRequests: 10
+  rateLimitWindow: "1m"
+  ipAllowlist:
+    - 192.168.1.0/24
+    - 10.0.0.50
+```
+
 ## Security Considerations
 
 - **TLS by default**: The server generates a self-signed TLS certificate at startup when no TLS configuration is provided. Plain HTTP requires explicitly setting `TALOSCTL_OIDC_INSECURE=true`
@@ -1021,6 +1094,8 @@ Expired certificates are automatically pruned from the list on each request.
 - **State parameter** is used for CSRF protection during the OIDC flow
 - **Admin API is opt-in**: The `/admin/*` endpoints are disabled by default and require setting `TALOSCTL_OIDC_ADMIN_TOKEN`. The token is compared using constant-time comparison to prevent timing attacks
 - **Audit logging** provides a tamper-evident record of all authentication events for compliance and security monitoring
+- **Rate limiting** can be configured to prevent brute-force attacks on the `/exchange` endpoint (disabled by default)
+- **IP allowlisting** can restrict access to specific networks or IP addresses (disabled by default)
 
 ## Debugging
 

@@ -143,6 +143,20 @@ config:
   # TALOSCTL_OIDC_AUDIT_LOG
   auditLog: "-"
 
+  # Rate limiting configuration
+  # TALOSCTL_OIDC_RATE_LIMIT_REQUESTS: requests per window (0 = disabled)
+  # TALOSCTL_OIDC_RATE_LIMIT_WINDOW: rate limit window duration (e.g., "1m", "5m", "1h")
+  rateLimitRequests: 0
+  rateLimitWindow: "1m"
+
+  # IP allowlist configuration
+  # TALOSCTL_OIDC_IP_ALLOWLIST: comma-separated list of allowed IPs/CIDRs
+  # Example:
+  #   ipAllowlist:
+  #     - 192.168.1.0/24
+  #     - 10.0.0.50
+  ipAllowlist: []
+
 # Talos CA Configuration
 talos:
   # Name of an existing secret containing the Talos CA cert and key.

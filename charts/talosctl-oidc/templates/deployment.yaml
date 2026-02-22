@@ -109,6 +109,16 @@ spec:
               value: {{ .Values.config.auditLog | quote }}
             - name: TALOSCTL_OIDC_LISTEN
               value: ":8443"
+            {{- if .Values.config.rateLimitRequests }}
+            - name: TALOSCTL_OIDC_RATE_LIMIT_REQUESTS
+              value: {{ .Values.config.rateLimitRequests | quote }}
+            - name: TALOSCTL_OIDC_RATE_LIMIT_WINDOW
+              value: {{ .Values.config.rateLimitWindow | quote }}
+            {{- end }}
+            {{- if .Values.config.ipAllowlist }}
+            - name: TALOSCTL_OIDC_IP_ALLOWLIST
+              value: {{ join "," .Values.config.ipAllowlist | quote }}
+            {{- end }}
           volumeMounts:
             {{- if not (and .Values.talos.caCertData .Values.talos.caKeyData) }}
             - name: talos-ca

@@ -24,9 +24,11 @@ import (
 	"time"
 
 	"github.com/qjoly/talosctl-oidc/pkg/admin"
+	"github.com/qjoly/talosctl-oidc/pkg/allowlist"
 	"github.com/qjoly/talosctl-oidc/pkg/audit"
 	"github.com/qjoly/talosctl-oidc/pkg/certsign"
 	"github.com/qjoly/talosctl-oidc/pkg/oidc"
+	"github.com/qjoly/talosctl-oidc/pkg/ratelimit"
 )
 
 func debug(format string, v ...interface{}) {
@@ -90,6 +92,14 @@ type Config struct {
 	// AdminTracker is the in-memory tracker for issued certs and stats.
 	// When non-nil, the /admin/certs and /admin/stats endpoints are enabled.
 	AdminTracker *admin.Tracker
+
+	// RateLimiter is an optional rate limiter for the /exchange endpoint.
+	// When non-nil, requests are rate-limited per IP.
+	RateLimiter *ratelimit.Limiter
+
+	// Allowlist is an optional IP allowlist for the /exchange endpoint.
+	// When non-nil, only IPs in the allowlist can access the endpoint.
+	Allowlist *allowlist.Allowlist
 }
 
 // CertResponse is the JSON response returned to clients after successful token exchange.
@@ -121,7 +131,17 @@ func New(cfg Config) *Server {
 	s := &Server{cfg: cfg}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/exchange", s.handleExchange)
+
+	// Apply rate limiting and IP allowlist middleware to /exchange endpoint.
+	exchangeHandler := http.HandlerFunc(s.handleExchange)
+	if cfg.Allowlist != nil && cfg.Allowlist.IsEnabled() {
+		exchangeHandler = cfg.Allowlist.Middleware(exchangeHandler)
+	}
+	if cfg.RateLimiter != nil && cfg.RateLimiter.IsEnabled() {
+		exchangeHandler = cfg.RateLimiter.Middleware(exchangeHandler)
+	}
+	mux.HandleFunc("/exchange", exchangeHandler)
+
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/ca", s.handleCA)
 
