@@ -7,8 +7,8 @@
 # Then pass them inline below. Note: the values must be PEM-encoded.
 
 helm upgrade --install talosctl-oidc -n talos-system oci://ghcr.io/qjoly/charts/talosctl-oidc --version 0.0.0-pr-71 \
-  --set talos.caCertData="<PEM-encoded Talos CA certificate>" \
-  --set talos.caKeyData="<PEM-encoded Talos CA private key>" \
+  --set-file talos.caCertData=temp/talos-os-ca.crt \
+  --set-file talos.caKeyData=temp/talos-os-ca.key \
   --set config.issuerUrl=https://oidc.home.une-tasse-de.cafe/application/o/talos-oidc/ \
   --set config.clientId=Mh3sbRbUpgPKKH0PUJceQ3l42wmkkJjmlGfgkEDz \
   --set-json 'config.endpoints=["192.168.0.42"]'
