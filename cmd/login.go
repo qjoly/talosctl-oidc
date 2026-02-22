@@ -31,17 +31,18 @@ func debug(format string, v ...interface{}) {
 }
 
 var loginFlags struct {
-	provider     string
-	clientID     string
-	clientSecret string
-	scopes       []string
-	callbackPort int
-	serverURL    string
-	contextName  string
-	talosconfig  string
-	serverCA     string
-	insecure     bool
-	watch        bool
+	provider         string
+	clientID         string
+	clientSecret     string
+	clientSecretFile string
+	scopes           []string
+	callbackPort     int
+	serverURL        string
+	contextName      string
+	talosconfig      string
+	serverCA         string
+	insecure         bool
+	watch            bool
 }
 
 var loginCmd = &cobra.Command{
@@ -59,7 +60,8 @@ When the certificate expires, you must re-authenticate via OIDC.`,
 func init() {
 	loginCmd.Flags().StringVar(&loginFlags.provider, "provider", "", "OIDC issuer URL (required)")
 	loginCmd.Flags().StringVar(&loginFlags.clientID, "client-id", "", "OIDC client ID (required)")
-	loginCmd.Flags().StringVar(&loginFlags.clientSecret, "client-secret", "", "OIDC client secret (optional, for confidential clients)")
+	loginCmd.Flags().StringVar(&loginFlags.clientSecret, "client-secret", "", "OIDC client secret (optional, for confidential clients). Prefer using --client-secret-file or TALOSCTL_OIDC_CLIENT_SECRET env var to avoid exposure in process list.")
+	loginCmd.Flags().StringVar(&loginFlags.clientSecretFile, "client-secret-file", "", "Path to file containing OIDC client secret (alternative to --client-secret)")
 	loginCmd.Flags().StringSliceVar(&loginFlags.scopes, "scopes", []string{"openid", "profile", "email", "offline_access"}, "OIDC scopes")
 	loginCmd.Flags().IntVar(&loginFlags.callbackPort, "callback-port", 8900, "Local callback server port")
 	loginCmd.Flags().StringVar(&loginFlags.serverURL, "server", "", "Cert exchange server URL (required, e.g. https://localhost:8443)")
@@ -78,6 +80,22 @@ func init() {
 
 func runLogin(cmd *cobra.Command, args []string) error {
 	debug("Login command started")
+
+	clientSecret := loginFlags.clientSecret
+	if clientSecret == "" {
+		if envSecret := os.Getenv("TALOSCTL_OIDC_CLIENT_SECRET"); envSecret != "" {
+			clientSecret = envSecret
+			debug("Using client secret from TALOSCTL_OIDC_CLIENT_SECRET env var")
+		} else if loginFlags.clientSecretFile != "" {
+			secretBytes, err := os.ReadFile(loginFlags.clientSecretFile)
+			if err != nil {
+				return fmt.Errorf("reading client secret file: %w", err)
+			}
+			clientSecret = string(bytes.TrimSpace(secretBytes))
+			debug("Using client secret from file: %s", loginFlags.clientSecretFile)
+		}
+	}
+
 	talosconfigPath := loginFlags.talosconfig
 	if talosconfigPath == "" {
 		talosconfigPath = talosconfig.DefaultPath()
@@ -135,7 +153,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		}
 
 		// Step 1: Authenticate via OIDC to get an ID token.
-		idToken, err := obtainIDToken(ctx)
+		idToken, err := obtainIDToken(ctx, clientSecret)
 		if err != nil {
 			cancel()
 			if loginFlags.watch {
@@ -252,7 +270,7 @@ func buildHTTPClient() (*http.Client, error) {
 }
 
 // obtainIDToken performs the OIDC flow (or uses cached token) and returns the ID token string.
-func obtainIDToken(ctx context.Context) (string, error) {
+func obtainIDToken(ctx context.Context, clientSecret string) (string, error) {
 	// Check for cached token in keychain.
 	storedToken, err := keychain.Retrieve(loginFlags.contextName)
 	if err != nil {
@@ -280,7 +298,7 @@ func obtainIDToken(ctx context.Context) (string, error) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Discovery failed during refresh: %v\nFalling back to full authentication.\n", err)
 		} else {
-			tokenResp, err := oidc.RefreshAccessToken(ctx, provider, storedToken.ClientID, loginFlags.clientSecret, storedToken.RefreshToken, loginFlags.scopes)
+			tokenResp, err := oidc.RefreshAccessToken(ctx, provider, storedToken.ClientID, clientSecret, storedToken.RefreshToken, loginFlags.scopes)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Token refresh failed: %v\nFalling back to full authentication.\n", err)
 			} else {
@@ -322,7 +340,7 @@ func obtainIDToken(ctx context.Context) (string, error) {
 	authCfg := oidc.AuthConfig{
 		IssuerURL:    loginFlags.provider,
 		ClientID:     loginFlags.clientID,
-		ClientSecret: loginFlags.clientSecret,
+		ClientSecret: clientSecret,
 		Scopes:       loginFlags.scopes,
 		CallbackPort: loginFlags.callbackPort,
 		OpenBrowser:  openBrowser,
