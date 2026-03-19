@@ -7,8 +7,7 @@ image:
   # The extension image (ghcr.io/qjoly/talosctl-oidc-talos-ext) is for Talos system extensions only.
   repository: ghcr.io/qjoly/talosctl-oidc-server
   pullPolicy: Always
-  # Overrides the image tag whose default is the chart appVersion.
-  tag: ""
+  tag: "latest"
   # Binary path in the server image:
   command: ["/talosctl-oidc"]
 
