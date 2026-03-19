@@ -38,52 +38,7 @@ helm install talosctl-oidc ./charts/talosctl-oidc --namespace talos-system --cre
 
 The service needs the Talos OS CA certificate and private key to sign ephemeral client certificates. There are three ways to provide it:
 
-### Mode A: Talos API Access from Kubernetes (Recommended)
-
-Talos 1.3+ can automatically provision its CA secret into pods running inside the cluster. This avoids storing the CA key in any Kubernetes Secret you manage yourself — Talos handles the rotation and injection.
-
-#### 1. Enable the feature in the machine config
-
-```bash
-talosctl -n <node-ip> edit machineconfig
-```
-
-```yaml
-machine:
-  features:
-    kubernetesTalosAPIAccess:
-      enabled: true
-      allowedRoles:
-        - os:admin          # must include the roles talosctl-oidc will request
-      allowedKubernetesNamespaces:
-        - talos-system      # namespace where you deploy the chart
-```
-
-#### 2. Deploy the chart with the mode enabled
-
-```yaml
-# values.yaml
-talos:
-  apiAccess:
-    enabled: true
-    roles:
-      - os:admin
-```
-
-```bash
-helm install talosctl-oidc ./charts/talosctl-oidc \
-  --namespace talos-system \
-  --create-namespace \
-  -f values.yaml
-```
-
-The chart will create a `talos.dev/v1alpha1` `ServiceAccount` resource. Talos detects it and provisions a standard Kubernetes `Secret` (named `<release>-talosctl-oidc-talos-secrets`) containing `os.crt` and `os.key`. That secret is then mounted inside the pod at `/var/run/secrets/talos.dev`.
-
-> **Note:** Because the pod needs to reach the Talos API on control-plane nodes, the chart automatically adds `tolerations: [{operator: Exists}]` to the pod spec in this mode. The `nodeSelector`, `affinity`, and `tolerations` values from `values.yaml` are ignored.
-
----
-
-### Mode B: Create Secret Manually
+### Mode A: Create Secret Manually
 
 Extract the Talos OS CA certificate and key from your Talos-generated files and create a Kubernetes Secret yourself.
 
@@ -124,7 +79,7 @@ talos:
 
 ---
 
-### Mode C: Inline Values
+### Mode B: Inline Values
 
 Provide the base64-encoded PEM contents directly in `values.yaml`. The chart creates the secret for you. Not recommended for production GitOps repositories as the key is stored in plain values.
 
