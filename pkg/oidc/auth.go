@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -300,8 +301,8 @@ func Authenticate(ctx context.Context, cfg AuthConfig) (*StoredToken, error) {
 	}
 	debug("OIDC callback received successfully")
 
-	// Verify state.
-	if result.State != state {
+	// Verify state using constant-time comparison to prevent timing attacks.
+	if subtle.ConstantTimeCompare([]byte(result.State), []byte(state)) != 1 {
 		return nil, fmt.Errorf("state mismatch: possible CSRF attack")
 	}
 	debug("OIDC state verified")
