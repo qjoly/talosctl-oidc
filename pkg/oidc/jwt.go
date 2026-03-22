@@ -10,6 +10,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -148,7 +149,9 @@ func ValidateIDToken(rawToken string, jwks *JWKS, expectedIssuer, expectedAudien
 	// include a trailing slash in the token's iss claim even when the configured issuer URL
 	// does not have one (or vice-versa). The OIDC spec treats these as equivalent.
 	iss, _ := claims["iss"].(string)
-	if strings.TrimSuffix(iss, "/") != strings.TrimSuffix(expectedIssuer, "/") {
+	normalizedIss := strings.TrimSuffix(iss, "/")
+	normalizedExpected := strings.TrimSuffix(expectedIssuer, "/")
+	if subtle.ConstantTimeCompare([]byte(normalizedIss), []byte(normalizedExpected)) != 1 {
 		return nil, fmt.Errorf("issuer mismatch: got %q, expected %q", iss, expectedIssuer)
 	}
 
@@ -391,13 +394,13 @@ func validateAudience(claims map[string]interface{}, expectedAudience string) er
 
 	switch v := aud.(type) {
 	case string:
-		if v != expectedAudience {
+		if subtle.ConstantTimeCompare([]byte(v), []byte(expectedAudience)) != 1 {
 			return fmt.Errorf("audience mismatch: got %q, expected %q", v, expectedAudience)
 		}
 	case []interface{}:
 		found := false
 		for _, a := range v {
-			if s, ok := a.(string); ok && s == expectedAudience {
+			if s, ok := a.(string); ok && subtle.ConstantTimeCompare([]byte(s), []byte(expectedAudience)) == 1 {
 				found = true
 				break
 			}
