@@ -53,11 +53,12 @@ func FetchJWKS(ctx context.Context, jwksURI string) (*JWKS, error) {
 		return nil, fmt.Errorf("creating JWKS request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oidcHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching JWKS: %w", err)
 	}
 	defer resp.Body.Close()
+	resp.Body = http.MaxBytesReader(nil, resp.Body, 1<<20) // 1 MB limit
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

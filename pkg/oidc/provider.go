@@ -14,6 +14,15 @@ import (
 	"time"
 )
 
+// oidcHTTPClient is a shared HTTP client with timeouts for all OIDC outbound calls.
+var oidcHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	},
+}
+
 // ProviderConfig holds the OIDC provider discovery information.
 type ProviderConfig struct {
 	Issuer                string `json:"issuer"`
@@ -33,11 +42,12 @@ func Discover(ctx context.Context, issuerURL string) (*ProviderConfig, error) {
 		return nil, fmt.Errorf("creating discovery request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oidcHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching OIDC discovery document: %w", err)
 	}
 	defer resp.Body.Close()
+	resp.Body = http.MaxBytesReader(nil, resp.Body, 1<<20) // 1 MB limit
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("OIDC discovery returned status %d", resp.StatusCode)
@@ -154,11 +164,12 @@ func ExchangeCode(ctx context.Context, provider *ProviderConfig, clientID, clien
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oidcHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("exchanging authorization code: %w", err)
 	}
 	defer resp.Body.Close()
+	resp.Body = http.MaxBytesReader(nil, resp.Body, 1<<20) // 1 MB limit
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -207,11 +218,12 @@ func RefreshAccessToken(ctx context.Context, provider *ProviderConfig, clientID,
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oidcHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("refreshing token: %w", err)
 	}
 	defer resp.Body.Close()
+	resp.Body = http.MaxBytesReader(nil, resp.Body, 1<<20) // 1 MB limit
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
