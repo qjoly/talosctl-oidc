@@ -69,6 +69,7 @@ type FileConfig struct {
 
 	// Audit & admin configuration.
 	AuditLog   string `yaml:"audit_log"`   // Path to audit log file.
+	CertLog    string `yaml:"cert_log"`    // Path to persistent certificate issuance log (empty = disabled).
 	AdminToken string `yaml:"admin_token"` // Bearer token for /admin/* endpoints.
 
 	// Rate limiting configuration.
@@ -104,6 +105,7 @@ type ResolvedConfig struct {
 	Insecure          bool
 	DataDir           string
 	AuditLog          string
+	CertLog           string
 	AdminToken        string
 	RateLimitRequests int
 	RateLimitWindow   time.Duration
@@ -162,6 +164,7 @@ func Load(configPath string) (*ResolvedConfig, error) {
 	rc.TLSKey = envOrDefault("TALOSCTL_OIDC_TLS_KEY", fileCfg.TLSKey)
 	rc.DataDir = envOrDefault("TALOSCTL_OIDC_DATA_DIR", fileCfg.DataDir)
 	rc.AuditLog = envOrDefault("TALOSCTL_OIDC_AUDIT_LOG", fileCfg.AuditLog)
+	rc.CertLog = envOrDefault("TALOSCTL_OIDC_CERT_LOG", fileCfg.CertLog)
 	rc.AdminToken = envOrDefault("TALOSCTL_OIDC_ADMIN_TOKEN", fileCfg.AdminToken)
 
 	// Endpoints: env var (comma-separated) > file (list).

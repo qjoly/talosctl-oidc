@@ -174,6 +174,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Initialize admin tracker (subscribes to audit events).
 	tracker := admin.NewTracker(auditLogger)
 
+	// Initialize persistent certificate issuance log if configured. Like the
+	// tracker, it subscribes to audit events and persists each issuance.
+	if rc.CertLog != "" {
+		certLog, err := admin.NewCertLog(rc.CertLog, auditLogger)
+		if err != nil {
+			return fmt.Errorf("initializing certificate log: %w", err)
+		}
+		defer certLog.Close()
+		log.Printf("Certificate issuance log: %s", rc.CertLog)
+	} else {
+		log.Printf("Certificate issuance log: disabled (set cert_log / TALOSCTL_OIDC_CERT_LOG to enable)")
+	}
+
 	if rc.AdminToken != "" {
 		log.Printf("Admin API: enabled (protected by bearer token)")
 	} else {
