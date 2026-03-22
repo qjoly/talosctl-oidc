@@ -77,7 +77,10 @@ func FetchJWKS(ctx context.Context, jwksURI string) (*JWKS, error) {
 // ValidateIDToken validates a JWT ID token against the given JWKS, issuer, and audience.
 // For HS256/HS384/HS512 tokens, the clientSecret is used as the HMAC key.
 // For asymmetric algorithms (RS256, ES256, EdDSA, etc.), the JWKS is used.
+// allowedAlgs is the server-side allowlist of permitted JWT algorithms (e.g. ["RS256", "ES256"]).
+// If empty, defaults to ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "EdDSA"].
 // It verifies:
+//   - The token algorithm is in the server-side allowlist
 //   - The token signature
 //   - The issuer (iss) matches the expected issuer
 //   - The audience (aud) contains the expected client ID
@@ -85,7 +88,7 @@ func FetchJWKS(ctx context.Context, jwksURI string) (*JWKS, error) {
 //   - The token is not used before its "not before" time (nbf), if present
 //
 // Returns the token claims on success.
-func ValidateIDToken(rawToken string, jwks *JWKS, expectedIssuer, expectedAudience, clientSecret string) (map[string]interface{}, error) {
+func ValidateIDToken(rawToken string, jwks *JWKS, expectedIssuer, expectedAudience, clientSecret string, allowedAlgs []string) (map[string]interface{}, error) {
 	parts := strings.Split(rawToken, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid JWT: expected 3 parts, got %d", len(parts))
@@ -104,6 +107,26 @@ func ValidateIDToken(rawToken string, jwks *JWKS, expectedIssuer, expectedAudien
 	}
 	if err := json.Unmarshal(headerJSON, &header); err != nil {
 		return nil, fmt.Errorf("parsing JWT header: %w", err)
+	}
+
+	// Explicitly reject 'none' algorithm before allowlist check.
+	if header.Alg == "" || header.Alg == "none" {
+		return nil, fmt.Errorf("JWT algorithm %q is not permitted", header.Alg)
+	}
+
+	// Validate algorithm against server-side allowlist.
+	if len(allowedAlgs) == 0 {
+		allowedAlgs = []string{"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "EdDSA"}
+	}
+	algAllowed := false
+	for _, a := range allowedAlgs {
+		if a == header.Alg {
+			algAllowed = true
+			break
+		}
+	}
+	if !algAllowed {
+		return nil, fmt.Errorf("JWT algorithm %q is not in the server-side allowlist", header.Alg)
 	}
 
 	// Verify signature.

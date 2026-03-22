@@ -706,7 +706,7 @@ func (s *Server) validateToken(ctx context.Context, idToken string) (*tokenClaim
 
 	// Parse and validate the token.
 	debug("Verifying ID token signature and claims (ClientID: %s)...", s.cfg.ClientID)
-	claims, err := oidc.ValidateIDToken(idToken, jwks, s.cfg.IssuerURL, s.cfg.ClientID, s.cfg.ClientSecret)
+	claims, err := oidc.ValidateIDToken(idToken, jwks, s.cfg.IssuerURL, s.cfg.ClientID, s.cfg.ClientSecret, nil)
 	if err != nil {
 		return nil, err
 	}
