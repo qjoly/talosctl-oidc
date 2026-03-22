@@ -185,10 +185,23 @@ type ClientCertificate struct {
 	CaPEM   []byte
 }
 
+const (
+	minCertTTL = 5 * time.Minute
+	maxCertTTL = 24 * time.Hour
+)
+
 // GenerateClientCert creates a short-lived client certificate signed by the Talos CA.
 // The certificate Organization field is set to the provided roles (e.g. "os:admin"),
 // matching the Talos RBAC convention.
 func GenerateClientCert(ca *CA, roles []string, ttl time.Duration) (*ClientCertificate, error) {
+	// Clamp TTL to safe bounds.
+	if ttl < minCertTTL {
+		ttl = minCertTTL
+	}
+	if ttl > maxCertTTL {
+		ttl = maxCertTTL
+	}
+
 	// Generate a new Ed25519 key pair for the client.
 	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
