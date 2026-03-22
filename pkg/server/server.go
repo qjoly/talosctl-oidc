@@ -484,11 +484,14 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 
 	clientIP := r.RemoteAddr
 
-	// Parse request body.
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+	// Limit request body to 64 KB to prevent memory exhaustion DoS.
+	// http.MaxBytesReader is preferred over io.LimitReader because it also
+	// signals the server to close the connection when the limit is exceeded.
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		debug("Failed to read request body: %v", err)
-		writeError(w, http.StatusBadRequest, "failed to read request body")
+		writeError(w, http.StatusRequestEntityTooLarge, "request body too large or unreadable")
 		return
 	}
 
