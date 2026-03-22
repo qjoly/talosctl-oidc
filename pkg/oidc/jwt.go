@@ -115,13 +115,12 @@ func ValidateIDToken(rawToken string, jwks *JWKS, expectedIssuer, expectedAudien
 
 	switch header.Alg {
 	case "HS256", "HS384", "HS512":
-		// HMAC-based: use client secret as the key.
+		// HMAC-based: use golang-jwt/jwt library for validation.
 		if clientSecret == "" {
 			return nil, fmt.Errorf("token uses %s but no client secret configured on the server", header.Alg)
 		}
-		if err := verifyHMAC(header.Alg, clientSecret, []byte(signingInput), signature); err != nil {
-			return nil, fmt.Errorf("JWT signature verification failed: %w", err)
-		}
+		// Use the vetted library for HMAC validation.
+		return ValidateHMACToken(rawToken, clientSecret, expectedIssuer, expectedAudience)
 	default:
 		// Asymmetric: find key in JWKS.
 		key, err := findKey(jwks, header.Kid, header.Alg)
@@ -145,13 +144,10 @@ func ValidateIDToken(rawToken string, jwks *JWKS, expectedIssuer, expectedAudien
 	}
 
 	// Validate issuer.
-	// Normalize both sides by trimming trailing slashes: some providers (e.g. Authentik)
-	// include a trailing slash in the token's iss claim even when the configured issuer URL
-	// does not have one (or vice-versa). The OIDC spec treats these as equivalent.
+	// normalizeIssuer trims trailing slashes so that providers that include or omit
+	// them are treated as equivalent (see normalizeIssuer in jwt_validated.go).
 	iss, _ := claims["iss"].(string)
-	normalizedIss := strings.TrimSuffix(iss, "/")
-	normalizedExpected := strings.TrimSuffix(expectedIssuer, "/")
-	if subtle.ConstantTimeCompare([]byte(normalizedIss), []byte(normalizedExpected)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(normalizeIssuer(iss)), []byte(normalizeIssuer(expectedIssuer))) != 1 {
 		return nil, fmt.Errorf("issuer mismatch: got %q, expected %q", iss, expectedIssuer)
 	}
 
