@@ -10,6 +10,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -71,6 +73,18 @@ func FetchJWKS(ctx context.Context, jwksURI string) (*JWKS, error) {
 	}
 
 	return &jwks, nil
+}
+
+// normalizeIssuer normalizes an OIDC issuer URL for comparison:
+// lowercases scheme and host, removes trailing slash.
+func normalizeIssuer(s string) string {
+	u, err := url.Parse(s)
+	if err != nil {
+		return strings.TrimSuffix(s, "/")
+	}
+	u.Host = strings.ToLower(u.Host)
+	u.Scheme = strings.ToLower(u.Scheme)
+	return strings.TrimSuffix(u.String(), "/")
 }
 
 // ValidateIDToken validates a JWT ID token against the given JWKS, issuer, and audience.
@@ -143,12 +157,9 @@ func ValidateIDToken(rawToken string, jwks *JWKS, expectedIssuer, expectedAudien
 		return nil, fmt.Errorf("parsing JWT claims: %w", err)
 	}
 
-	// Validate issuer.
-	// Normalize both sides by trimming trailing slashes: some providers (e.g. Authentik)
-	// include a trailing slash in the token's iss claim even when the configured issuer URL
-	// does not have one (or vice-versa). The OIDC spec treats these as equivalent.
+	// Validate issuer with full URL normalization.
 	iss, _ := claims["iss"].(string)
-	if strings.TrimSuffix(iss, "/") != strings.TrimSuffix(expectedIssuer, "/") {
+	if subtle.ConstantTimeCompare([]byte(normalizeIssuer(iss)), []byte(normalizeIssuer(expectedIssuer))) != 1 {
 		return nil, fmt.Errorf("issuer mismatch: got %q, expected %q", iss, expectedIssuer)
 	}
 
@@ -391,13 +402,13 @@ func validateAudience(claims map[string]interface{}, expectedAudience string) er
 
 	switch v := aud.(type) {
 	case string:
-		if v != expectedAudience {
+		if subtle.ConstantTimeCompare([]byte(v), []byte(expectedAudience)) != 1 {
 			return fmt.Errorf("audience mismatch: got %q, expected %q", v, expectedAudience)
 		}
 	case []interface{}:
 		found := false
 		for _, a := range v {
-			if s, ok := a.(string); ok && s == expectedAudience {
+			if s, ok := a.(string); ok && subtle.ConstantTimeCompare([]byte(s), []byte(expectedAudience)) == 1 {
 				found = true
 				break
 			}
