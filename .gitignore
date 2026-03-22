@@ -6,5 +6,8 @@ talos-admin.crt
 talos-ca.crt
 temp/
 talos/
-
+result
+nix/
+_out/
+flake.lock
 charts/**/values.dev.yaml
