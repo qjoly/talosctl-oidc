@@ -27,6 +27,7 @@ import (
 
 	"github.com/qjoly/talosctl-oidc/pkg/admin"
 	"github.com/qjoly/talosctl-oidc/pkg/allowlist"
+	"github.com/qjoly/talosctl-oidc/pkg/anomaly"
 	"github.com/qjoly/talosctl-oidc/pkg/audit"
 	"github.com/qjoly/talosctl-oidc/pkg/oidc"
 	"github.com/qjoly/talosctl-oidc/pkg/ratelimit"
@@ -110,6 +111,10 @@ type Config struct {
 	// instead of using the static Roles field.
 	RBACMapper *rbac.Mapper
 
+	// AnomalyDetector is an optional anomaly detector for brute-force and
+	// token replay detection. When non-nil, authentication failures are
+	// tracked per IP and token reuse is detected.
+	AnomalyDetector *anomaly.Detector
 }
 
 // CertResponse is the JSON response returned to clients after successful token exchange.
@@ -532,6 +537,13 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Anomaly detection: record token use and warn on replay.
+	if s.cfg.AnomalyDetector != nil {
+		if s.cfg.AnomalyDetector.RecordTokenUse(req.IDToken) {
+			log.Printf("[SECURITY] WARNING: token replay detected from IP %s", clientIP)
+		}
+	}
+
 	debug("Validating OIDC ID token...")
 	// Validate the OIDC token.
 	tc, err := s.validateToken(r.Context(), req.IDToken)
@@ -548,6 +560,10 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 			ClientIP:      clientIP,
 			Error:         err.Error(),
 		})
+		// Anomaly detection: record auth failure per IP.
+		if s.cfg.AnomalyDetector != nil {
+			s.cfg.AnomalyDetector.RecordFailure(clientIP)
+		}
 		writeError(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
