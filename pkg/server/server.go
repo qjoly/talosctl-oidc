@@ -518,7 +518,7 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 			ClientIP: clientIP,
 			Error:    err.Error(),
 		})
-		writeError(w, http.StatusUnauthorized, "invalid token: "+err.Error())
+		writeError(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
 	debug("Token validated successfully for user: %s (%s)", tc.Subject, tc.Email)
