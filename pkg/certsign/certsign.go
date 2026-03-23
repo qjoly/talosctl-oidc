@@ -22,18 +22,45 @@ type CA struct {
 }
 
 // LoadCA reads a PEM-encoded CA certificate and private key from files.
+// The CA key file is loaded via LoadCAKeyFromFile, which enforces strict
+// file permission requirements (0400 or 0600) per ISO 27001 A.10.1.
 func LoadCA(certPath, keyPath string) (*CA, error) {
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading CA certificate: %w", err)
 	}
 
-	keyPEM, err := os.ReadFile(keyPath)
+	keyPEM, err := LoadCAKeyFromFile(keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading CA private key: %w", err)
+		return nil, err
 	}
 
 	return ParseCA(certPEM, keyPEM)
+}
+
+// LoadCAKeyFromFile loads a CA private key from a file, verifying it has
+// restrictive permissions (owner read-only: 0400 or 0600).
+//
+// Passing private key material through environment variables exposes it via
+// /proc/<pid>/environ and shell history. Loading from a file with strict
+// permissions is preferred (ISO 27001 A.10.1 — cryptographic key management).
+func LoadCAKeyFromFile(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat CA key file: %w", err)
+	}
+
+	// Check permissions: only allow 0400 or 0600.
+	mode := info.Mode().Perm()
+	if mode != 0o400 && mode != 0o600 {
+		return nil, fmt.Errorf("CA key file %s has insecure permissions %04o; require 0400 or 0600", path, mode)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading CA key file: %w", err)
+	}
+	return data, nil
 }
 
 // LoadCAFromTalosConfig parses a talosconfig YAML file (as provisioned by the

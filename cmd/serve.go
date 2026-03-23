@@ -166,6 +166,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 		log.Printf("Loaded Talos CA from talosconfig %s", rc.TalosConfig)
 	} else if rc.CACertData != "" && rc.CAKeyData != "" {
+		// DEPRECATED: Passing the CA private key via an environment variable
+		// (TALOSCTL_OIDC_CA_KEY_DATA) exposes it through /proc/<pid>/environ and
+		// shell history. Prefer supplying it as a file (ca_key / TALOSCTL_OIDC_CA_KEY)
+		// with permissions 0400 or 0600 (ISO 27001 A.10.1). This fallback will be
+		// removed in a future release.
+		log.Printf("WARNING: DEPRECATED: CA private key loaded from ca_key_data / TALOSCTL_OIDC_CA_KEY_DATA " +
+			"(environment variable). This exposes the key via /proc/<pid>/environ. " +
+			"Migrate to ca_key / TALOSCTL_OIDC_CA_KEY (a file path with permissions 0400 or 0600).")
 		ca, caErr = certsign.ParseCA([]byte(rc.CACertData), []byte(rc.CAKeyData))
 		if caErr != nil {
 			return fmt.Errorf("loading CA from inline data: %w", caErr)
