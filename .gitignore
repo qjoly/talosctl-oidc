@@ -11,3 +11,4 @@ nix/
 _out/
 flake.lock
 charts/**/values.dev.yaml
+test-env/
