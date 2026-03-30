@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test.sh - Local end-to-end test environment for talosctl-oidc
 #
-# Sets up a Dex OIDC provider in Docker, generates a self-signed Talos CA,
+# Sets up a Dex OIDC provider in Docker (or Podman), generates a self-signed Talos CA,
 # and starts the talosctl-oidc server so that you can exercise the full
 # authentication flow from a second terminal.
 #
@@ -25,6 +25,15 @@ DEX_CONTAINER_NAME="talosctl-oidc-dex"
 TEST_DIR="$(pwd)/test-env"
 BINARY="./talosctl-oidc"
 
+# ── Container runtime detection ──────────────────────────────────────────────
+if command -v docker &>/dev/null; then
+    CONTAINER_RUNTIME="docker"
+elif command -v podman &>/dev/null; then
+    CONTAINER_RUNTIME="podman"
+else
+    CONTAINER_RUNTIME=""
+fi
+
 # ── Colours ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -41,7 +50,7 @@ log_step()  { echo -e "${BLUE}[STEP]${NC}  $*"; }
 cleanup() {
     echo ""
     log_info "Stopping Dex container..."
-    docker rm -f "$DEX_CONTAINER_NAME" 2>/dev/null || true
+    "$CONTAINER_RUNTIME" rm -f "$DEX_CONTAINER_NAME" 2>/dev/null || true
     log_info "Cleanup complete."
 }
 trap cleanup EXIT
@@ -51,7 +60,12 @@ check_prerequisites() {
     log_step "Checking prerequisites..."
     local missing=0
 
-    for cmd in docker openssl curl; do
+    if [ -z "$CONTAINER_RUNTIME" ]; then
+        log_error "'docker' or 'podman' is required but neither was found in PATH."
+        missing=1
+    fi
+
+    for cmd in openssl curl; do
         if ! command -v "$cmd" &>/dev/null; then
             log_error "'$cmd' is required but not found in PATH."
             missing=1
@@ -63,11 +77,12 @@ check_prerequisites() {
         exit 1
     fi
 
-    if ! docker info &>/dev/null; then
-        log_error "Docker daemon is not running."
+    if ! "$CONTAINER_RUNTIME" info &>/dev/null; then
+        log_error "$CONTAINER_RUNTIME daemon is not running."
         exit 1
     fi
 
+    log_info "Using container runtime: $CONTAINER_RUNTIME"
     log_info "All prerequisites satisfied."
 }
 
@@ -139,6 +154,7 @@ staticClients:
     public: true
     redirectURIs:
       - http://localhost:${CALLBACK_PORT}/callback
+      - http://127.0.0.1:${CALLBACK_PORT}/callback
 
 enablePasswordDB: true
 staticPasswords:
@@ -154,11 +170,11 @@ EOF
 
 # ── Start Dex ─────────────────────────────────────────────────────────────────
 start_dex() {
-    log_step "Starting Dex OIDC provider (Docker)..."
+    log_step "Starting Dex OIDC provider ($CONTAINER_RUNTIME)..."
 
-    docker rm -f "$DEX_CONTAINER_NAME" 2>/dev/null || true
+    "$CONTAINER_RUNTIME" rm -f "$DEX_CONTAINER_NAME" 2>/dev/null || true
 
-    docker run -d \
+    "$CONTAINER_RUNTIME" run -d \
         --name "$DEX_CONTAINER_NAME" \
         -p "${DEX_PORT}:${DEX_PORT}" \
         -v "${TEST_DIR}/dex:/dex-config:ro" \
@@ -171,7 +187,7 @@ start_dex() {
     until curl -sf "http://localhost:${DEX_PORT}/dex/.well-known/openid-configuration" >/dev/null 2>&1; do
         if [ "$waited" -ge "$max_wait" ]; then
             log_error "Dex did not become healthy within ${max_wait}s."
-            docker logs "$DEX_CONTAINER_NAME"
+            "$CONTAINER_RUNTIME" logs "$DEX_CONTAINER_NAME"
             exit 1
         fi
         sleep 1
@@ -187,7 +203,7 @@ write_server_config() {
     mkdir -p "$TEST_DIR/server-data"
 
     cat > "$TEST_DIR/server-config.yaml" << EOF
-# OIDC provider (Dex running locally via Docker)
+# OIDC provider (Dex running locally via $CONTAINER_RUNTIME)
 issuer_url: http://localhost:${DEX_PORT}/dex
 client_id: ${CLIENT_ID}
 
