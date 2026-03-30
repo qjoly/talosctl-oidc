@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/qjoly/talosctl-oidc/pkg/admin"
@@ -106,6 +107,10 @@ type Config struct {
 	// based on OIDC claims. When non-nil, roles are determined dynamically
 	// instead of using the static Roles field.
 	RBACMapper *rbac.Mapper
+
+	// Blocklist is an optional in-memory certificate revocation blocklist.
+	// Certificates whose fingerprints are in the blocklist will not be issued.
+	Blocklist *admin.Blocklist
 }
 
 // CertResponse is the JSON response returned to clients after successful token exchange.
@@ -136,6 +141,11 @@ type Server struct {
 
 	// bruteForce protects the login form from brute force attacks
 	bruteForce *bruteForceProtector
+
+	// jwksCache caches the JWKS to avoid fetching it on every /exchange request.
+	// It is initialized lazily on the first call to validateToken.
+	jwksCache     *oidc.JWKSCache
+	jwksCacheOnce sync.Once
 }
 
 // New creates a new cert exchange server.
@@ -166,6 +176,7 @@ func New(cfg Config) *Server {
 		// API endpoints with Bearer token auth
 		mux.HandleFunc("/admin/stats", s.requireAdminToken(s.handleAdminStats))
 		mux.HandleFunc("/admin/certs", s.requireAdminToken(s.handleAdminCerts))
+		mux.HandleFunc("/admin/revoke", s.requireAdminAuth(s.handleRevoke))
 	}
 
 	s.httpServer = &http.Server{
@@ -582,6 +593,15 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	}
 	debug("Certificate generated successfully")
 
+	// Compute the certificate fingerprint
+	fingerprint, err := admin.FingerprintFromPEM(clientCert.CertPEM)
+	if err != nil {
+		debug("Failed to compute certificate fingerprint: %v", err)
+		log.Printf("WARNING: Failed to compute certificate fingerprint: %v", err)
+		// Don't fail the request, just log and continue without fingerprint
+		fingerprint = ""
+	}
+
 	certExpiry := time.Now().Add(s.cfg.CertTTL)
 
 	resp := CertResponse{
@@ -609,6 +629,7 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		Roles:         roles,
 		CertTTL:       s.cfg.CertTTL.String(),
 		CertExpiry:    certExpiry,
+		CertFingerprint: fingerprint,
 	})
 
 	log.Printf("Issued ephemeral certificate (TTL: %s, Roles: %v)", s.cfg.CertTTL, roles)
@@ -632,15 +653,27 @@ type tokenClaims struct {
 // On success it returns the extracted identity claims.
 func (s *Server) validateToken(ctx context.Context, idToken string) (*tokenClaims, error) {
 	debug("Starting token validation for issuer: %s", s.cfg.IssuerURL)
-	// Discover the OIDC provider to get the JWKS URI.
-	provider, err := oidc.Discover(ctx, s.cfg.IssuerURL)
-	if err != nil {
-		return nil, fmt.Errorf("OIDC discovery failed: %w", err)
-	}
-	debug("OIDC provider discovered, fetching JWKS from %s", provider.JWKSURI)
 
-	// Fetch the JWKS.
-	jwks, err := oidc.FetchJWKS(ctx, provider.JWKSURI)
+	// Initialize the JWKS cache on the first call by performing OIDC discovery.
+	// Subsequent calls reuse the same cache instance.
+	var initErr error
+	s.jwksCacheOnce.Do(func() {
+		provider, err := oidc.Discover(ctx, s.cfg.IssuerURL)
+		if err != nil {
+			initErr = fmt.Errorf("OIDC discovery failed: %w", err)
+			// Reset once so discovery is retried on the next request.
+			s.jwksCacheOnce = sync.Once{}
+			return
+		}
+		debug("OIDC provider discovered, JWKS URI: %s", provider.JWKSURI)
+		s.jwksCache = oidc.NewJWKSCache(provider.JWKSURI, 5*time.Minute)
+	})
+	if initErr != nil {
+		return nil, initErr
+	}
+
+	// Fetch the JWKS from the cache (refreshed automatically when the TTL expires).
+	jwks, err := s.jwksCache.Get(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetching JWKS: %w", err)
 	}
@@ -721,6 +754,47 @@ func (s *Server) requireAdminToken(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// requireAdminAuth wraps a handler with either bearer token or session authentication.
+// This is used for endpoints that should be accessible both via API and web dashboard.
+func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.AdminToken == "" {
+			writeError(w, http.StatusForbidden, "admin API is disabled (no TALOSCTL_OIDC_ADMIN_TOKEN configured)")
+			return
+		}
+
+		// Check for Bearer token first
+		auth := r.Header.Get("Authorization")
+		if auth != "" {
+			const prefix = "Bearer "
+			if strings.HasPrefix(auth, prefix) {
+				token := auth[len(prefix):]
+				if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.AdminToken)) == 1 {
+					// Valid bearer token
+					next(w, r)
+					return
+				}
+			}
+			// Invalid bearer token format or value
+			writeError(w, http.StatusForbidden, "invalid admin token")
+			return
+		}
+
+		// Check for session cookie
+		if s.adminSessions != nil {
+			sessionToken := getSessionToken(r)
+			if sessionToken != "" && s.adminSessions.validate(sessionToken) {
+				// Valid session
+				next(w, r)
+				return
+			}
+		}
+
+		// No valid authentication found
+		writeError(w, http.StatusUnauthorized, "missing or invalid authentication")
+	}
+}
+
 // handleAdminStats returns aggregate server statistics.
 //
 // GET /admin/stats
@@ -759,4 +833,32 @@ func (s *Server) handleAdminCerts(w http.ResponseWriter, r *http.Request) {
 	certs := s.cfg.AdminTracker.ActiveCerts()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(certs)
+}
+
+// handleRevoke adds a certificate fingerprint to the in-memory blocklist.
+//
+// POST /admin/revoke
+// Body: {"fingerprint": "<sha256-hex>"}
+// Response: 204 No Content
+func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Fingerprint string `json:"fingerprint"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Fingerprint == "" {
+		writeError(w, http.StatusBadRequest, "fingerprint is required")
+		return
+	}
+	if s.cfg.Blocklist != nil {
+		s.cfg.Blocklist.Revoke(req.Fingerprint)
+		log.Printf("Certificate revoked: fingerprint=%s", req.Fingerprint)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

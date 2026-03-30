@@ -9,13 +9,14 @@ import (
 
 // CertRecord represents an issued certificate tracked in memory.
 type CertRecord struct {
-	Subject   string    `json:"subject"`
-	Email     string    `json:"email"`
-	IssuedAt  time.Time `json:"issued_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-	ClientIP  string    `json:"client_ip"`
-	Roles     []string  `json:"roles"`
-	TTL       string    `json:"ttl"`
+	Subject     string    `json:"subject"`
+	Email       string    `json:"email"`
+	IssuedAt    time.Time `json:"issued_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	ClientIP    string    `json:"client_ip"`
+	Roles       []string  `json:"roles"`
+	TTL         string    `json:"ttl"`
+	Fingerprint string    `json:"fingerprint"` // SHA-256 fingerprint of the certificate
 }
 
 // Stats holds aggregate server statistics.
@@ -76,13 +77,14 @@ func (t *Tracker) handleEvent(event audit.Event) {
 	case audit.EventCertIssued:
 		t.totalCertsIssued++
 		t.certs = append(t.certs, CertRecord{
-			Subject:   event.Subject,
-			Email:     event.Email,
-			IssuedAt:  event.Timestamp,
-			ExpiresAt: event.CertExpiry,
-			ClientIP:  event.ClientIP,
-			Roles:     event.Roles,
-			TTL:       event.CertTTL,
+			Subject:     event.Subject,
+			Email:       event.Email,
+			IssuedAt:    event.Timestamp,
+			ExpiresAt:   event.CertExpiry,
+			ClientIP:    event.ClientIP,
+			Roles:       event.Roles,
+			TTL:         event.CertTTL,
+			Fingerprint: event.CertFingerprint,
 		})
 	case audit.EventAuthSuccess:
 		t.totalAuthSuccess++
