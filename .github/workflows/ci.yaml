@@ -183,17 +183,22 @@ jobs:
           echo "==> Requesting authorization endpoint"
           LOGIN_PAGE=$(curl -s -c "$COOKIE_JAR" -b "$COOKIE_JAR" -L "$AUTH_URL" -D - -o /dev/null -w '%{url_effective}')
 
-          # Follow the redirect to get the login page and extract the 'req' parameter
+          # Follow the redirect to get the login page and extract the form action URL
           LOGIN_RESPONSE=$(curl -s -c "$COOKIE_JAR" -b "$COOKIE_JAR" -L "$AUTH_URL")
-          REQ_PARAM=$(echo "$LOGIN_RESPONSE" | grep -oP 'req=\K[^"&]+' | head -1 || true)
-
-          if [ -z "$REQ_PARAM" ]; then
-            echo "ERROR: Could not extract 'req' parameter from Dex login page"
+          
+          # Extract the form action URL (contains state/back parameters)
+          FORM_ACTION=$(echo "$LOGIN_RESPONSE" | grep -oP 'action="\K[^"]+' | head -1 || true)
+          
+          if [ -z "$FORM_ACTION" ]; then
+            echo "ERROR: Could not extract form action from Dex login page"
             echo "Login page content:"
             echo "$LOGIN_RESPONSE" | head -50
             exit 1
           fi
-          echo "==> Extracted req parameter: ${REQ_PARAM}"
+          
+          # Convert HTML entities (&amp; -> &)
+          FORM_ACTION=$(echo "$FORM_ACTION" | sed 's/&amp;/\&/g')
+          echo "==> Extracted form action: ${FORM_ACTION}"
 
           # ── Step 3: Submit login credentials to Dex ──
           echo "==> Submitting credentials to Dex"
@@ -203,7 +208,7 @@ jobs:
             -D /dev/stderr \
             -o /dev/null \
             -w '%{redirect_url}' \
-            "http://localhost:${DEX_PORT}/dex/auth/local/login?req=${REQ_PARAM}" 2>/tmp/login_headers)
+            "http://localhost:${DEX_PORT}${FORM_ACTION}" 2>/tmp/login_headers)
 
           echo "==> Login redirect URL: ${LOGIN_RESULT}"
 
