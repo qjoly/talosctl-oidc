@@ -493,6 +493,7 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	requestID := audit.NewRequestID()
 	clientIP := r.RemoteAddr
 
 	// Limit request body to 64 KB to prevent memory exhaustion DoS.
@@ -528,9 +529,14 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		debug("Token validation failed: %v", err)
 		log.Printf("Token validation failed: %v", err)
 		s.auditLog(audit.Event{
-			Type:     audit.EventAuthFailure,
-			ClientIP: clientIP,
-			Error:    err.Error(),
+			Type:          audit.EventAuthFailure,
+			RequestID:     requestID,
+			EventCategory: "authentication",
+			EventOutcome:  "failure",
+			EventAction:   "token-exchange",
+			Severity:      "WARN",
+			ClientIP:      clientIP,
+			Error:         err.Error(),
 		})
 		writeError(w, http.StatusUnauthorized, "invalid token")
 		return
@@ -539,11 +545,16 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 
 	// Auth succeeded.
 	s.auditLog(audit.Event{
-		Type:     audit.EventAuthSuccess,
-		Subject:  tc.Subject,
-		Email:    tc.Email,
-		Issuer:   tc.Issuer,
-		ClientIP: clientIP,
+		Type:          audit.EventAuthSuccess,
+		RequestID:     requestID,
+		EventCategory: "authentication",
+		EventOutcome:  "success",
+		EventAction:   "token-exchange",
+		Severity:      "INFO",
+		Subject:       tc.Subject,
+		Email:         tc.Email,
+		Issuer:        tc.Issuer,
+		ClientIP:      clientIP,
 	})
 
 	// Determine roles: use RBAC mapper if configured, otherwise use static roles.
@@ -569,11 +580,16 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		debug("Certificate generation failed: %v", err)
 		log.Printf("Certificate generation failed: %v", err)
 		s.auditLog(audit.Event{
-			Type:     audit.EventCertError,
-			Subject:  tc.Subject,
-			Email:    tc.Email,
-			ClientIP: clientIP,
-			Error:    err.Error(),
+			Type:          audit.EventCertError,
+			RequestID:     requestID,
+			EventCategory: "authentication",
+			EventOutcome:  "failure",
+			EventAction:   "token-exchange",
+			Severity:      "WARN",
+			Subject:       tc.Subject,
+			Email:         tc.Email,
+			ClientIP:      clientIP,
+			Error:         err.Error(),
 		})
 		writeError(w, http.StatusInternalServerError, "failed to generate certificate")
 		return
@@ -603,14 +619,19 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 
 	s.auditLog(audit.Event{
-		Type:            audit.EventCertIssued,
-		Subject:         tc.Subject,
-		Email:           tc.Email,
-		Issuer:          tc.Issuer,
-		ClientIP:        clientIP,
-		Roles:           roles,
-		CertTTL:         s.cfg.CertTTL.String(),
-		CertExpiry:      certExpiry,
+		Type:          audit.EventCertIssued,
+		RequestID:     requestID,
+		EventCategory: "authentication",
+		EventOutcome:  "success",
+		EventAction:   "token-exchange",
+		Severity:      "INFO",
+		Subject:       tc.Subject,
+		Email:         tc.Email,
+		Issuer:        tc.Issuer,
+		ClientIP:      clientIP,
+		Roles:         roles,
+		CertTTL:       s.cfg.CertTTL.String(),
+		CertExpiry:    certExpiry,
 		CertFingerprint: fingerprint,
 	})
 

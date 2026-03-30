@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -63,6 +64,42 @@ type Event struct {
 
 	// Detail provides additional context.
 	Detail string `json:"detail,omitempty"`
+
+	// RequestID is a unique identifier for the request (UUID v4 format).
+	RequestID string `json:"request.id,omitempty"`
+
+	// EventCategory is the ECS event category.
+	EventCategory string `json:"event.category,omitempty"`
+
+	// EventOutcome is the ECS event outcome: "success", "failure", "unknown".
+	EventOutcome string `json:"event.outcome,omitempty"`
+
+	// EventAction is the ECS event action.
+	EventAction string `json:"event.action,omitempty"`
+
+	// Severity is the log severity level.
+	Severity string `json:"severity,omitempty"`
+}
+
+// NewRequestID generates a random request ID in UUID v4 format using crypto/rand.
+func NewRequestID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// SeverityForEvent returns the appropriate severity level for an event type.
+func SeverityForEvent(t EventType) string {
+	switch t {
+	case EventCertIssued, EventAuthSuccess:
+		return "INFO"
+	case EventAuthFailure, EventCertError:
+		return "WARN"
+	default:
+		return "INFO"
+	}
 }
 
 // Logger writes structured audit events as JSON lines to a configured output.
