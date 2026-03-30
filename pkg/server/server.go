@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/qjoly/talosctl-oidc/pkg/admin"
@@ -140,6 +141,11 @@ type Server struct {
 
 	// bruteForce protects the login form from brute force attacks
 	bruteForce *bruteForceProtector
+
+	// jwksCache caches the JWKS to avoid fetching it on every /exchange request.
+	// It is initialized lazily on the first call to validateToken.
+	jwksCache     *oidc.JWKSCache
+	jwksCacheOnce sync.Once
 }
 
 // New creates a new cert exchange server.
@@ -626,15 +632,27 @@ type tokenClaims struct {
 // On success it returns the extracted identity claims.
 func (s *Server) validateToken(ctx context.Context, idToken string) (*tokenClaims, error) {
 	debug("Starting token validation for issuer: %s", s.cfg.IssuerURL)
-	// Discover the OIDC provider to get the JWKS URI.
-	provider, err := oidc.Discover(ctx, s.cfg.IssuerURL)
-	if err != nil {
-		return nil, fmt.Errorf("OIDC discovery failed: %w", err)
-	}
-	debug("OIDC provider discovered, fetching JWKS from %s", provider.JWKSURI)
 
-	// Fetch the JWKS.
-	jwks, err := oidc.FetchJWKS(ctx, provider.JWKSURI)
+	// Initialize the JWKS cache on the first call by performing OIDC discovery.
+	// Subsequent calls reuse the same cache instance.
+	var initErr error
+	s.jwksCacheOnce.Do(func() {
+		provider, err := oidc.Discover(ctx, s.cfg.IssuerURL)
+		if err != nil {
+			initErr = fmt.Errorf("OIDC discovery failed: %w", err)
+			// Reset once so discovery is retried on the next request.
+			s.jwksCacheOnce = sync.Once{}
+			return
+		}
+		debug("OIDC provider discovered, JWKS URI: %s", provider.JWKSURI)
+		s.jwksCache = oidc.NewJWKSCache(provider.JWKSURI, 5*time.Minute)
+	})
+	if initErr != nil {
+		return nil, initErr
+	}
+
+	// Fetch the JWKS from the cache (refreshed automatically when the TTL expires).
+	jwks, err := s.jwksCache.Get(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetching JWKS: %w", err)
 	}
