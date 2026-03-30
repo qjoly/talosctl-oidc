@@ -1104,6 +1104,7 @@ The dashboard provides:
 - **Login page** with token-based authentication
 - **Real-time statistics** showing uptime, active sessions, auth successes/failures
 - **Active sessions table** with user details, roles, and certificate expiry
+- **Certificate revocation** via one-click Revoke buttons for each session
 - **Auto-refresh** capability and logout functionality
 
 Sessions are maintained via HTTP-only cookies with a 24-hour timeout.
@@ -1156,7 +1157,22 @@ export TALOSCTL_OIDC_ADMIN_TOKEN=$(openssl rand -hex 32)
 
 ### Revoking a Certificate
 
-Use the `/admin/revoke` endpoint to add a certificate fingerprint to the blocklist:
+You can revoke certificates in two ways:
+
+#### Option 1: Web Dashboard (Recommended)
+
+The easiest way to revoke a certificate is through the admin web dashboard:
+
+1. Navigate to `https://localhost:8443/admin/` and log in with your admin token
+2. Find the certificate in the "Active Sessions" table
+3. Click the **Revoke** button in the "Action" column
+4. Confirm the revocation in the dialog
+
+The certificate fingerprint is automatically computed and displayed. No manual calculation needed!
+
+#### Option 2: API Endpoint
+
+Use the `/admin/revoke` endpoint to programmatically add a certificate fingerprint to the blocklist:
 
 ```bash
 # Revoke a certificate by fingerprint
@@ -1202,14 +1218,24 @@ talosctl config info | grep -A 20 "certificate:" | \
 
 - **Not retroactive**: Certificates that have already been issued remain valid until they expire
 - **No persistence**: The blocklist is cleared on server restart
-- **Manual fingerprint management**: You must compute and track fingerprints externally
 
 The blocklist is **in-memory only** and does not persist across server restarts. This feature is intended for emergency revocation scenarios, not as a replacement for proper certificate expiration.
 
 ### Example Workflow
 
+**Using the Web Dashboard:**
+
+1. Open the admin dashboard at `https://localhost:8443/admin/`
+2. Locate the user's active session in the table
+3. Click the **Revoke** button next to their certificate
+4. Confirm the action
+5. The certificate fingerprint is immediately added to the blocklist
+6. Wait for the certificate's TTL to expire (default: 5 minutes)
+
+**Using the API:**
+
 1. Identify a certificate that needs to be revoked
-2. Compute its SHA-256 fingerprint using OpenSSL
+2. Compute its SHA-256 fingerprint using OpenSSL (see "Computing Certificate Fingerprints" above)
 3. Call `/admin/revoke` with the fingerprint
 4. The server will refuse to issue any certificate with that fingerprint
 5. Wait for the certificate's TTL to expire (default: 5 minutes)
