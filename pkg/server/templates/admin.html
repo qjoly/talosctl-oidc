@@ -142,17 +142,31 @@
         
         th, td {
             text-align: left;
-            padding: 1rem 1.5rem;
+            padding: 0.75rem 0.5rem;
             border-bottom: 1px solid #eee;
+            font-size: 0.875rem;
         }
         
         th {
             background: #f8f9fa;
             font-weight: 600;
             color: #666;
-            font-size: 0.875rem;
+            font-size: 0.75rem;
             text-transform: uppercase;
             letter-spacing: 0.5px;
+        }
+
+        td code {
+            font-size: 0.75rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 120px;
+            display: inline-block;
+        }
+
+        td:first-child code {
+            max-width: 80px;
         }
         
         tr:hover {
@@ -324,6 +338,45 @@
             height: 64px;
             color: #e32f4b;
         }
+
+        .revoke-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 0.35rem 0.6rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.7rem;
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
+
+        .revoke-btn:hover {
+            background: #c82333;
+        }
+
+        .revoke-btn:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+
+        .action-column {
+            text-align: center;
+            width: 70px;
+            padding: 0.5rem 0.25rem !important;
+        }
+
+        .compact-time {
+            font-size: 0.75rem;
+            white-space: nowrap;
+        }
+
+        .email-cell {
+            max-width: 150px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
     </style>
 </head>
 <body>
@@ -380,17 +433,18 @@
                             <th>Email</th>
                             <th>Roles</th>
                             <th>Client IP</th>
-                            <th>Issued At</th>
-                            <th>Expires At</th>
+                            <th>Issued</th>
+                            <th>Expires</th>
                             <th>TTL</th>
                             <th>Status</th>
+                            <th class="action-column">Action</th>
                         </tr>
                     </thead>
                     <tbody>
                         {{range .Certs}}
-                        <tr>
-                            <td><code>{{.Subject}}</code></td>
-                            <td>{{.Email}}</td>
+                        <tr data-fingerprint="{{.Fingerprint}}">
+                            <td><code title="{{.Subject}}">{{.Subject}}</code></td>
+                            <td class="email-cell" title="{{.Email}}">{{.Email}}</td>
                             <td>
                                 <div class="roles-list">
                                     {{range .Roles}}
@@ -398,11 +452,14 @@
                                     {{end}}
                                 </div>
                             </td>
-                            <td><code>{{.ClientIP}}</code></td>
-                            <td>{{.IssuedAt.Format "2006-01-02 15:04:05"}}</td>
-                            <td>{{.ExpiresAt.Format "2006-01-02 15:04:05"}}</td>
+                            <td><code title="{{.ClientIP}}">{{.ClientIP}}</code></td>
+                            <td class="compact-time">{{.IssuedAt.Format "15:04:05"}}</td>
+                            <td class="compact-time">{{.ExpiresAt.Format "15:04:05"}}</td>
                             <td>{{.TTL}}</td>
                             <td><span class="badge badge-success">Active</span></td>
+                            <td class="action-column">
+                                <button class="revoke-btn" onclick="revokeCert('{{.Fingerprint}}', this)">Revoke</button>
+                            </td>
                         </tr>
                         {{end}}
                     </tbody>
@@ -456,5 +513,72 @@
         </div>
     </div>
     {{end}}
+
+    <script>
+        function revokeCert(fingerprint, button) {
+            if (!fingerprint) {
+                alert('Error: Certificate fingerprint is missing');
+                return;
+            }
+
+            if (!confirm('Are you sure you want to revoke this certificate?\n\nFingerprint: ' + fingerprint + '\n\nNote: This will prevent new certificates with this fingerprint from being issued, but already-issued certificates will remain valid until they expire.')) {
+                return;
+            }
+
+            // Disable the button to prevent double-clicks
+            button.disabled = true;
+            button.textContent = 'Revoking...';
+
+            // Get session cookie for authentication
+            const cookies = document.cookie.split(';');
+            let sessionToken = '';
+            for (let cookie of cookies) {
+                const [name, value] = cookie.trim().split('=');
+                if (name === 'talosctl_oidc_admin_session') {
+                    sessionToken = value;
+                    break;
+                }
+            }
+
+            // Make the API call
+            fetch('/admin/revoke', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                credentials: 'include', // Include cookies for session authentication
+                body: JSON.stringify({ fingerprint: fingerprint })
+            })
+            .then(response => {
+                if (response.status === 204) {
+                    // Success
+                    button.textContent = 'Revoked';
+                    button.style.background = '#6c757d';
+                    
+                    // Update the status badge
+                    const row = button.closest('tr');
+                    const statusCell = row.querySelector('td:nth-last-child(2)');
+                    if (statusCell) {
+                        statusCell.innerHTML = '<span class="badge badge-warning">Revoked</span>';
+                    }
+                    
+                    alert('Certificate revoked successfully!\n\nThe fingerprint has been added to the blocklist. Already-issued certificates will remain valid until they expire.');
+                } else if (response.status === 401 || response.status === 403) {
+                    alert('Authentication failed. Please log in again.');
+                    location.reload();
+                } else {
+                    return response.json().then(data => {
+                        throw new Error(data.error || 'Failed to revoke certificate');
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error revoking certificate:', error);
+                alert('Failed to revoke certificate: ' + error.message);
+                button.disabled = false;
+                button.textContent = 'Revoke';
+            });
+        }
+    </script>
 </body>
 </html>

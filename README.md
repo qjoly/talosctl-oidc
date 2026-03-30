@@ -406,6 +406,7 @@ don't need to update their `--server-ca` file.
 | `/admin/logout` | POST | Logout and clear session |
 | `/admin/stats` | GET | Server statistics (requires `Authorization: Bearer <admin-token>`) |
 | `/admin/certs` | GET | List active (non-expired) issued certs (requires `Authorization: Bearer <admin-token>`) |
+| `/admin/revoke` | POST | Revoke a certificate by fingerprint (requires `Authorization: Bearer <admin-token>`) |
 
 **Exchange request:**
 
@@ -1103,6 +1104,7 @@ The dashboard provides:
 - **Login page** with token-based authentication
 - **Real-time statistics** showing uptime, active sessions, auth successes/failures
 - **Active sessions table** with user details, roles, and certificate expiry
+- **Certificate revocation** via one-click Revoke buttons for each session
 - **Auto-refresh** capability and logout functionality
 
 Sessions are maintained via HTTP-only cookies with a 24-hour timeout.
@@ -1113,7 +1115,138 @@ Sessions are maintained via HTTP-only cookies with a 24-hour timeout.
 2. Enter your admin token when prompted
 3. View the dashboard with all statistics and active sessions
 
-The API endpoints (`/admin/stats` and `/admin/certs`) continue to accept Bearer tokens for programmatic access.
+The API endpoints (`/admin/stats`, `/admin/certs`, and `/admin/revoke`) continue to accept Bearer tokens for programmatic access.
+
+#### `POST /admin/revoke`
+
+Revokes a certificate by adding its SHA-256 fingerprint to an in-memory blocklist. Once revoked, the certificate fingerprint is blocked from being issued again during the current server session.
+
+**Request:**
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $TALOSCTL_OIDC_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"fingerprint":"a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"}' \
+  https://localhost:8443/admin/revoke
+```
+
+**Response:** `204 No Content` on success.
+
+See the [Certificate Revocation](#certificate-revocation) section below for more details.
+
+## Certificate Revocation
+
+The server supports an in-memory certificate revocation blocklist for emergency scenarios where you need to prevent specific certificates from being issued.
+
+### How It Works
+
+1. **Fingerprint-based**: Certificates are identified by their SHA-256 fingerprint (hash of the DER-encoded certificate)
+2. **In-memory storage**: Revoked fingerprints are stored in a thread-safe in-memory map
+3. **Session-scoped**: The blocklist is cleared when the server restarts
+4. **Proactive blocking**: The server checks the blocklist before issuing new certificates
+
+### Enabling Revocation
+
+Certificate revocation is automatically available when the admin API is enabled. No additional configuration is required.
+
+```bash
+# Enable the admin API (required for revocation)
+export TALOSCTL_OIDC_ADMIN_TOKEN=$(openssl rand -hex 32)
+```
+
+### Revoking a Certificate
+
+You can revoke certificates in two ways:
+
+#### Option 1: Web Dashboard (Recommended)
+
+The easiest way to revoke a certificate is through the admin web dashboard:
+
+1. Navigate to `https://localhost:8443/admin/` and log in with your admin token
+2. Find the certificate in the "Active Sessions" table
+3. Click the **Revoke** button in the "Action" column
+4. Confirm the revocation in the dialog
+
+The certificate fingerprint is automatically computed and displayed. No manual calculation needed!
+
+#### Option 2: API Endpoint
+
+Use the `/admin/revoke` endpoint to programmatically add a certificate fingerprint to the blocklist:
+
+```bash
+# Revoke a certificate by fingerprint
+curl -X POST \
+  -H "Authorization: Bearer $TALOSCTL_OIDC_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"fingerprint":"a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"}' \
+  https://localhost:8443/admin/revoke
+```
+
+**Request body:**
+
+```json
+{
+  "fingerprint": "a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
+}
+```
+
+**Response:** `204 No Content` on success.
+
+### Computing Certificate Fingerprints
+
+The fingerprint is the SHA-256 hash of the certificate's DER-encoded bytes. You can compute it using OpenSSL:
+
+```bash
+# From a PEM certificate file:
+openssl x509 -in cert.pem -outform DER | sha256sum | awk '{print $1}'
+
+# From a certificate in ~/.talos/config:
+talosctl config info | grep -A 20 "certificate:" | \
+  grep -v "certificate:" | \
+  openssl x509 -inform PEM -outform DER | \
+  sha256sum | awk '{print $1}'
+```
+
+### Use Cases
+
+- **Immediate revocation**: Revoke a certificate when a user's access should be terminated immediately (e.g., security incident, employee departure)
+- **Compromise response**: Block a certificate that may have been compromised or leaked
+- **Testing**: Verify that revocation mechanisms are working correctly
+
+### Limitations
+
+- **Not retroactive**: Certificates that have already been issued remain valid until they expire
+- **No persistence**: The blocklist is cleared on server restart
+
+The blocklist is **in-memory only** and does not persist across server restarts. This feature is intended for emergency revocation scenarios, not as a replacement for proper certificate expiration.
+
+### Example Workflow
+
+**Using the Web Dashboard:**
+
+1. Open the admin dashboard at `https://localhost:8443/admin/`
+2. Locate the user's active session in the table
+3. Click the **Revoke** button next to their certificate
+4. Confirm the action
+5. The certificate fingerprint is immediately added to the blocklist
+6. Wait for the certificate's TTL to expire (default: 5 minutes)
+
+**Using the API:**
+
+1. Identify a certificate that needs to be revoked
+2. Compute its SHA-256 fingerprint using OpenSSL (see "Computing Certificate Fingerprints" above)
+3. Call `/admin/revoke` with the fingerprint
+4. The server will refuse to issue any certificate with that fingerprint
+5. Wait for the certificate's TTL to expire (default: 5 minutes)
+
+### Alternative: Short TTLs
+
+For most use cases, the default 5-minute certificate TTL provides sufficient security without requiring explicit revocation. Consider reducing the TTL even further for high-security environments:
+
+```bash
+export TALOSCTL_OIDC_CERT_TTL=1m  # 1 minute
+```
 
 ## Rate Limiting and IP Allowlist
 
