@@ -55,6 +55,9 @@ type Event struct {
 	// CertExpiry is when the issued certificate expires.
 	CertExpiry time.Time `json:"cert_expiry,omitempty"`
 
+	// CertFingerprint is the SHA-256 fingerprint of the issued certificate.
+	CertFingerprint string `json:"cert_fingerprint,omitempty"`
+
 	// Error contains the error message for failure events.
 	Error string `json:"error,omitempty"`
 

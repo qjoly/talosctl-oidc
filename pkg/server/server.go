@@ -170,7 +170,7 @@ func New(cfg Config) *Server {
 		// API endpoints with Bearer token auth
 		mux.HandleFunc("/admin/stats", s.requireAdminToken(s.handleAdminStats))
 		mux.HandleFunc("/admin/certs", s.requireAdminToken(s.handleAdminCerts))
-		mux.HandleFunc("/admin/revoke", s.requireAdminToken(s.handleRevoke))
+		mux.HandleFunc("/admin/revoke", s.requireAdminAuth(s.handleRevoke))
 	}
 
 	s.httpServer = &http.Server{
@@ -571,6 +571,15 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	}
 	debug("Certificate generated successfully")
 
+	// Compute the certificate fingerprint
+	fingerprint, err := admin.FingerprintFromPEM(clientCert.CertPEM)
+	if err != nil {
+		debug("Failed to compute certificate fingerprint: %v", err)
+		log.Printf("WARNING: Failed to compute certificate fingerprint: %v", err)
+		// Don't fail the request, just log and continue without fingerprint
+		fingerprint = ""
+	}
+
 	certExpiry := time.Now().Add(s.cfg.CertTTL)
 
 	resp := CertResponse{
@@ -585,14 +594,15 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 
 	s.auditLog(audit.Event{
-		Type:       audit.EventCertIssued,
-		Subject:    tc.Subject,
-		Email:      tc.Email,
-		Issuer:     tc.Issuer,
-		ClientIP:   clientIP,
-		Roles:      roles,
-		CertTTL:    s.cfg.CertTTL.String(),
-		CertExpiry: certExpiry,
+		Type:            audit.EventCertIssued,
+		Subject:         tc.Subject,
+		Email:           tc.Email,
+		Issuer:          tc.Issuer,
+		ClientIP:        clientIP,
+		Roles:           roles,
+		CertTTL:         s.cfg.CertTTL.String(),
+		CertExpiry:      certExpiry,
+		CertFingerprint: fingerprint,
 	})
 
 	log.Printf("Issued ephemeral certificate (TTL: %s, Roles: %v)", s.cfg.CertTTL, roles)
@@ -702,6 +712,47 @@ func (s *Server) requireAdminToken(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		next(w, r)
+	}
+}
+
+// requireAdminAuth wraps a handler with either bearer token or session authentication.
+// This is used for endpoints that should be accessible both via API and web dashboard.
+func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.AdminToken == "" {
+			writeError(w, http.StatusForbidden, "admin API is disabled (no TALOSCTL_OIDC_ADMIN_TOKEN configured)")
+			return
+		}
+
+		// Check for Bearer token first
+		auth := r.Header.Get("Authorization")
+		if auth != "" {
+			const prefix = "Bearer "
+			if strings.HasPrefix(auth, prefix) {
+				token := auth[len(prefix):]
+				if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.AdminToken)) == 1 {
+					// Valid bearer token
+					next(w, r)
+					return
+				}
+			}
+			// Invalid bearer token format or value
+			writeError(w, http.StatusForbidden, "invalid admin token")
+			return
+		}
+
+		// Check for session cookie
+		if s.adminSessions != nil {
+			sessionToken := getSessionToken(r)
+			if sessionToken != "" && s.adminSessions.validate(sessionToken) {
+				// Valid session
+				next(w, r)
+				return
+			}
+		}
+
+		// No valid authentication found
+		writeError(w, http.StatusUnauthorized, "missing or invalid authentication")
 	}
 }
 
