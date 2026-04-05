@@ -1,11 +1,30 @@
 package admin
 
 import (
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/qjoly/talosctl-oidc/pkg/audit"
 )
+
+// FingerprintFromPEM extracts the SHA-256 fingerprint from a PEM-encoded certificate.
+func FingerprintFromPEM(certPEM []byte) (string, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return "", fmt.Errorf("failed to decode PEM block")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("parsing certificate: %w", err)
+	}
+	sum := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(sum[:]), nil
+}
 
 // CertRecord represents an issued certificate tracked in memory.
 type CertRecord struct {

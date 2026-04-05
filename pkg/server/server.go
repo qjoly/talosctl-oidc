@@ -108,9 +108,6 @@ type Config struct {
 	// instead of using the static Roles field.
 	RBACMapper *rbac.Mapper
 
-	// Blocklist is an optional in-memory certificate revocation blocklist.
-	// Certificates whose fingerprints are in the blocklist will not be issued.
-	Blocklist *admin.Blocklist
 }
 
 // CertResponse is the JSON response returned to clients after successful token exchange.
@@ -176,7 +173,6 @@ func New(cfg Config) *Server {
 		// API endpoints with Bearer token auth
 		mux.HandleFunc("/admin/stats", s.requireAdminToken(s.handleAdminStats))
 		mux.HandleFunc("/admin/certs", s.requireAdminToken(s.handleAdminCerts))
-		mux.HandleFunc("/admin/revoke", s.requireAdminAuth(s.handleRevoke))
 	}
 
 	s.httpServer = &http.Server{
@@ -838,30 +834,3 @@ func (s *Server) handleAdminCerts(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(certs)
 }
 
-// handleRevoke adds a certificate fingerprint to the in-memory blocklist.
-//
-// POST /admin/revoke
-// Body: {"fingerprint": "<sha256-hex>"}
-// Response: 204 No Content
-func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var req struct {
-		Fingerprint string `json:"fingerprint"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if req.Fingerprint == "" {
-		writeError(w, http.StatusBadRequest, "fingerprint is required")
-		return
-	}
-	if s.cfg.Blocklist != nil {
-		s.cfg.Blocklist.Revoke(req.Fingerprint)
-		log.Printf("Certificate revoked: fingerprint=%s", req.Fingerprint)
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
