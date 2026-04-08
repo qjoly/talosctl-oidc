@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -260,18 +261,22 @@ func (s *Server) selfSignedPaths() (caCrt, caKey, srvCrt, srvKey string) {
 func (s *Server) loadOrGenerateSelfSignedTLS() (*tls.Config, error) {
 	caCrtPath, caKeyPath, srvCrtPath, srvKeyPath := s.selfSignedPaths()
 
-	// Check if all four files exist.
-	allExist := fileExists(caCrtPath) && fileExists(caKeyPath) &&
-		fileExists(srvCrtPath) && fileExists(srvKeyPath)
-
-	if allExist {
+	// Attempt to load existing certificates directly (avoids TOCTOU race).
+	// If any file is missing, fall through to generation.
+	tlsCfg, err := s.loadPersistedSelfSignedTLS(caCrtPath, caKeyPath, srvCrtPath, srvKeyPath)
+	if err == nil {
 		log.Printf("Loading persisted self-signed TLS certificates from %s", s.cfg.DataDir)
-		return s.loadPersistedSelfSignedTLS(caCrtPath, caKeyPath, srvCrtPath, srvKeyPath)
+		return tlsCfg, nil
+	}
+	if !os.IsNotExist(err) && !isPathError(err) {
+		// Unexpected error (not "file not found") — surface it.
+		return nil, fmt.Errorf("loading persisted TLS certificates: %w", err)
 	}
 
 	// Generate fresh certificates.
 	log.Printf("No persisted certificates found in %s, generating new ones", s.cfg.DataDir)
-	tlsCfg, caPEM, caKeyPEM, srvCertPEM, srvKeyPEM, err := s.generateSelfSignedMaterial()
+	var caPEM, caKeyPEM, srvCertPEM, srvKeyPEM []byte
+	tlsCfg, caPEM, caKeyPEM, srvCertPEM, srvKeyPEM, err = s.generateSelfSignedMaterial()
 	if err != nil {
 		return nil, err
 	}
@@ -457,6 +462,14 @@ func (s *Server) generateSelfSignedTLSInMemory() (*tls.Config, error) {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// isPathError reports whether err is (or wraps) an *os.PathError whose inner
+// error satisfies os.IsNotExist. This handles cases where os.IsNotExist does
+// not unwrap wrapped errors.
+func isPathError(err error) bool {
+	var pathErr *os.PathError
+	return errors.As(err, &pathErr) && os.IsNotExist(pathErr)
 }
 
 // handleHealth returns a 200 OK for health checks.
