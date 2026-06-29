@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # test.sh - Local end-to-end test environment for talosctl-oidc
 #
-# Sets up a Dex OIDC provider in Docker (or Podman), generates a self-signed Talos CA,
-# and starts the talosctl-oidc server so that you can exercise the full
-# authentication flow from a second terminal.
+# Sets up a Dex OIDC provider in Docker (or Podman) and starts the talosctl-oidc
+# server so that you can exercise the full authentication flow from a second
+# terminal. The server issues certificates via the Talos API, so the exchange
+# step needs a talosconfig (TALOSCONFIG) and a reachable Talos node.
 #
 # Usage:
 #   ./test.sh
@@ -102,24 +103,23 @@ build_binary() {
     log_info "Binary built successfully."
 }
 
-# ── Test CA ───────────────────────────────────────────────────────────────────
-generate_test_ca() {
-    log_step "Generating test CA certificate..."
+# ── Talos API credential ────────────────────────────────────────────────────
+# The server no longer signs certificates itself: it delegates to the Talos API
+# (GenerateClientConfiguration). It therefore needs a talosconfig credential and
+# a reachable Talos node. Set TALOSCONFIG to point at one (defaults to the
+# standard talosctl config). The cert-exchange step will fail if the Talos API
+# is not reachable from this machine.
+TALOS_CONFIG_PATH="${TALOSCONFIG:-$HOME/.talos/config}"
 
-    if [ -f "$TEST_DIR/ca.crt" ] && [ -f "$TEST_DIR/ca.key" ]; then
-        log_info "CA already exists – reusing."
+check_talos_credential() {
+    log_step "Checking Talos API credential..."
+    if [ ! -f "$TALOS_CONFIG_PATH" ]; then
+        log_info "WARNING: no talosconfig at $TALOS_CONFIG_PATH. The OIDC flow will"
+        log_info "work, but the certificate exchange needs a reachable Talos API."
+        log_info "Set TALOSCONFIG to a valid credential (e.g. from 'talosctl config new')."
         return
     fi
-
-    openssl genrsa -out "$TEST_DIR/ca.key" 4096 2>/dev/null
-    openssl req -new -x509 \
-        -key "$TEST_DIR/ca.key" \
-        -out "$TEST_DIR/ca.crt" \
-        -days 365 \
-        -subj "/CN=Test Talos CA/O=Test" \
-        2>/dev/null
-
-    log_info "Test CA written to $TEST_DIR/ca.{crt,key}"
+    log_info "Using Talos credential at $TALOS_CONFIG_PATH"
 }
 
 # ── Dex configuration ─────────────────────────────────────────────────────────
@@ -207,14 +207,13 @@ write_server_config() {
 issuer_url: http://localhost:${DEX_PORT}/dex
 client_id: ${CLIENT_ID}
 
-# Test Talos CA (self-signed, for local testing only)
-ca_cert: ${TEST_DIR}/ca.crt
-ca_key: ${TEST_DIR}/ca.key
+# Talos API credential — the server delegates signing to the Talos API.
+talos_config: ${TALOS_CONFIG_PATH}
 
 # Server
 listen: ":${SERVER_PORT}"
 
-# Placeholder endpoint (no real Talos cluster needed to test the auth flow)
+# Talos node endpoint — the cert-exchange step calls its API to issue certs.
 endpoints:
   - localhost
 
@@ -269,7 +268,7 @@ print_banner() {
 main() {
     check_prerequisites
     mkdir -p "$TEST_DIR"
-    generate_test_ca
+    check_talos_credential
     write_dex_config
     start_dex
     write_server_config

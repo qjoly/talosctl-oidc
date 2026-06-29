@@ -28,10 +28,10 @@ import (
 	"github.com/qjoly/talosctl-oidc/pkg/admin"
 	"github.com/qjoly/talosctl-oidc/pkg/allowlist"
 	"github.com/qjoly/talosctl-oidc/pkg/audit"
-	"github.com/qjoly/talosctl-oidc/pkg/certsign"
 	"github.com/qjoly/talosctl-oidc/pkg/oidc"
 	"github.com/qjoly/talosctl-oidc/pkg/ratelimit"
 	"github.com/qjoly/talosctl-oidc/pkg/rbac"
+	"github.com/qjoly/talosctl-oidc/pkg/talosapi"
 )
 
 func debug(format string, v ...interface{}) {
@@ -45,8 +45,9 @@ type Config struct {
 	// ListenAddr is the address to listen on (e.g. ":8443").
 	ListenAddr string
 
-	// CA is the parsed Talos CA used to sign ephemeral client certificates.
-	CA *certsign.CA
+	// Issuer mints short-lived client certificates by delegating to the Talos
+	// API. The CA private key is never held by this server.
+	Issuer *talosapi.Issuer
 
 	// CertTTL is the lifetime of issued client certificates.
 	CertTTL time.Duration
@@ -583,8 +584,8 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	}
 
 	debug("Generating ephemeral client certificate for roles: %v", roles)
-	// Generate ephemeral client certificate.
-	clientCert, err := certsign.GenerateClientCert(s.cfg.CA, roles, s.cfg.CertTTL)
+	// Generate ephemeral client certificate (local CA signer or Talos API).
+	clientCert, err := s.cfg.Issuer.Issue(r.Context(), roles, s.cfg.CertTTL)
 	if err != nil {
 		debug("Certificate generation failed: %v", err)
 		log.Printf("Certificate generation failed: %v", err)

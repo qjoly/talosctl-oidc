@@ -1,14 +1,17 @@
-# Extract your Talos CA cert and key from your talosconfig and base64-decode them:
+# No CA needed: the server issues certificates via the Talos API. The chart
+# (talos.apiAccess.enabled=true by default) creates a serviceaccounts.talos.dev
+# resource so Talos provisions a short-lived credential into the pod.
 #
-#   CONTEXT=$(talosctl config info --output json | jq -r '.context')
-#   CA_CERT=$(talosctl config info --output json | jq -r '.contexts[env.CONTEXT].ca' | base64 -d)
-#   CA_KEY=<the CA private key — only available from the secrets bundle used when bootstrapping the cluster>
+# Prerequisite on the Talos nodes (machine config):
 #
-# Then pass them inline below. Note: the values must be PEM-encoded.
+#   machine:
+#     features:
+#       kubernetesTalosAPIAccess:
+#         enabled: true
+#         allowedRoles: [os:admin]
+#         allowedKubernetesNamespaces: [talos-system]
 
 helm upgrade --install talosctl-oidc -n talos-system oci://ghcr.io/qjoly/charts/talosctl-oidc --version 0.0.0-pr-71 \
-  --set-file talos.caCertData=temp/talos-os-ca.crt \
-  --set-file talos.caKeyData=temp/talos-os-ca.key \
   --set config.issuerUrl=https://oidc.home.une-tasse-de.cafe/application/o/talos-oidc/ \
   --set config.clientId=talosctl_oidc \
   --set-json 'config.endpoints=["192.168.0.42"]'

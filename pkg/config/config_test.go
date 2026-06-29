@@ -31,8 +31,6 @@ roles:
   - os:reader
   - os:admin
 insecure: true
-ca_cert: /tmp/ca.crt
-ca_key: /tmp/ca.key
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("writing test config: %v", err)
@@ -94,8 +92,7 @@ issuer_url: https://from-file.example.com
 client_id: file-client
 endpoints:
   - 10.0.0.1
-ca_cert: /file/ca.crt
-ca_key: /file/ca.key
+talos_config: /file/talosconfig
 listen: ":9090"
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -109,8 +106,7 @@ listen: ":9090"
 	// Clear env vars that should NOT be set (so file value comes through).
 	t.Setenv("TALOSCTL_OIDC_CLIENT_ID", "")
 	t.Setenv("TALOSCTL_OIDC_LISTEN", "")
-	t.Setenv("TALOSCTL_OIDC_CA_CERT", "")
-	t.Setenv("TALOSCTL_OIDC_CA_KEY", "")
+	t.Setenv("TALOSCTL_OIDC_TALOS_CONFIG", "")
 
 	rc, err := Load(path)
 	if err != nil {
@@ -134,8 +130,8 @@ listen: ":9090"
 	if rc.Listen != ":9090" {
 		t.Errorf("Listen = %q, want file value %q", rc.Listen, ":9090")
 	}
-	if rc.CACert != "/file/ca.crt" {
-		t.Errorf("CACert = %q, want file value %q", rc.CACert, "/file/ca.crt")
+	if rc.TalosConfig != "/file/talosconfig" {
+		t.Errorf("TalosConfig = %q, want file value %q", rc.TalosConfig, "/file/talosconfig")
 	}
 }
 
@@ -147,8 +143,6 @@ issuer_url: https://via-env-config.example.com
 client_id: env-config-client
 endpoints:
   - 10.0.0.1
-ca_cert: /tmp/ca.crt
-ca_key: /tmp/ca.key
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("writing test config: %v", err)
@@ -161,8 +155,6 @@ ca_key: /tmp/ca.key
 	t.Setenv("TALOSCTL_OIDC_ISSUER_URL", "")
 	t.Setenv("TALOSCTL_OIDC_CLIENT_ID", "")
 	t.Setenv("TALOSCTL_OIDC_ENDPOINTS", "")
-	t.Setenv("TALOSCTL_OIDC_CA_CERT", "")
-	t.Setenv("TALOSCTL_OIDC_CA_KEY", "")
 
 	rc, err := Load("") // empty string = check TALOSCTL_OIDC_CONFIG env
 	if err != nil {
@@ -184,8 +176,6 @@ func TestLoad_EnvOnlyNoFile(t *testing.T) {
 	t.Setenv("TALOSCTL_OIDC_ISSUER_URL", "https://env-only.example.com")
 	t.Setenv("TALOSCTL_OIDC_CLIENT_ID", "env-only-client")
 	t.Setenv("TALOSCTL_OIDC_ENDPOINTS", "1.2.3.4")
-	t.Setenv("TALOSCTL_OIDC_CA_CERT", "/env/ca.crt")
-	t.Setenv("TALOSCTL_OIDC_CA_KEY", "/env/ca.key")
 	t.Setenv("TALOSCTL_OIDC_LISTEN", ":7070")
 	t.Setenv("TALOSCTL_OIDC_ROLES", "os:reader")
 
@@ -212,27 +202,15 @@ func TestResolvedConfig_Validate(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "valid with ca files",
+			name: "valid in-cluster (no talosconfig)",
 			rc: ResolvedConfig{
-				CACert:    "/ca.crt",
-				CAKey:     "/ca.key",
 				IssuerURL: "https://example.com",
 				ClientID:  "client",
 				Endpoints: []string{"10.0.0.1"},
 			},
 		},
 		{
-			name: "valid with inline data",
-			rc: ResolvedConfig{
-				CACertData: "---BEGIN CERT---",
-				CAKeyData:  "---BEGIN KEY---",
-				IssuerURL:  "https://example.com",
-				ClientID:   "client",
-				Endpoints:  []string{"10.0.0.1"},
-			},
-		},
-		{
-			name: "valid with talos config",
+			name: "valid with talosconfig",
 			rc: ResolvedConfig{
 				TalosConfig: "/talosconfig",
 				IssuerURL:   "https://example.com",
@@ -241,19 +219,8 @@ func TestResolvedConfig_Validate(t *testing.T) {
 			},
 		},
 		{
-			name: "missing CA",
-			rc: ResolvedConfig{
-				IssuerURL: "https://example.com",
-				ClientID:  "client",
-				Endpoints: []string{"10.0.0.1"},
-			},
-			wantErr: true,
-		},
-		{
 			name: "missing issuer",
 			rc: ResolvedConfig{
-				CACert:    "/ca.crt",
-				CAKey:     "/ca.key",
 				ClientID:  "client",
 				Endpoints: []string{"10.0.0.1"},
 			},
@@ -262,8 +229,6 @@ func TestResolvedConfig_Validate(t *testing.T) {
 		{
 			name: "missing endpoints",
 			rc: ResolvedConfig{
-				CACert:    "/ca.crt",
-				CAKey:     "/ca.key",
 				IssuerURL: "https://example.com",
 				ClientID:  "client",
 			},
@@ -272,8 +237,6 @@ func TestResolvedConfig_Validate(t *testing.T) {
 		{
 			name: "tls_cert without tls_key",
 			rc: ResolvedConfig{
-				CACert:    "/ca.crt",
-				CAKey:     "/ca.key",
 				IssuerURL: "https://example.com",
 				ClientID:  "client",
 				Endpoints: []string{"10.0.0.1"},
@@ -284,8 +247,6 @@ func TestResolvedConfig_Validate(t *testing.T) {
 		{
 			name: "tls_cert with insecure",
 			rc: ResolvedConfig{
-				CACert:    "/ca.crt",
-				CAKey:     "/ca.key",
 				IssuerURL: "https://example.com",
 				ClientID:  "client",
 				Endpoints: []string{"10.0.0.1"},
@@ -403,8 +364,6 @@ issuer_url: https://example.com
 client_id: test
 endpoints:
   - 10.0.0.1
-ca_cert: /ca.crt
-ca_key: /ca.key
 insecure: false
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -415,8 +374,6 @@ insecure: false
 	t.Setenv("TALOSCTL_OIDC_ISSUER_URL", "")
 	t.Setenv("TALOSCTL_OIDC_CLIENT_ID", "")
 	t.Setenv("TALOSCTL_OIDC_ENDPOINTS", "")
-	t.Setenv("TALOSCTL_OIDC_CA_CERT", "")
-	t.Setenv("TALOSCTL_OIDC_CA_KEY", "")
 
 	// Env var sets insecure=true, overriding file's false.
 	t.Setenv("TALOSCTL_OIDC_INSECURE", "true")

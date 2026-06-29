@@ -40,12 +40,14 @@ type RBACConfig struct {
 // All fields are optional; missing fields are left at their zero value and
 // can be filled in by environment variables.
 type FileConfig struct {
-	// CA configuration.
-	CACert      string `yaml:"ca_cert"`      // Path to Talos CA certificate file.
-	CAKey       string `yaml:"ca_key"`       // Path to Talos CA private key file.
-	CACertData  string `yaml:"ca_cert_data"` // PEM-encoded Talos CA certificate, inline.
-	CAKeyData   string `yaml:"ca_key_data"`  // PEM-encoded Talos CA private key, inline.
-	TalosConfig string `yaml:"talos_config"` // Path to talosconfig YAML file.
+	// Certificate issuing configuration.
+	//
+	// Certificates are issued by delegating to the Talos API
+	// (GenerateClientConfiguration) using a client credential, so the CA private
+	// key is never given to this server. TalosConfig is the path to that
+	// credential; leave it empty in-cluster to use the credential provisioned by
+	// the talos.dev ServiceAccount.
+	TalosConfig string `yaml:"talos_config"` // Path to talosconfig (Talos API client credential).
 
 	// OIDC configuration.
 	IssuerURL        string `yaml:"issuer_url"`         // OIDC issuer URL for token validation.
@@ -83,10 +85,6 @@ type FileConfig struct {
 // ResolvedConfig holds the final merged configuration values as strings,
 // ready for validation and conversion in the serve command.
 type ResolvedConfig struct {
-	CACert            string
-	CAKey             string
-	CACertData        string
-	CAKeyData         string
 	TalosConfig       string
 	IssuerURL         string
 	ClientID          string
@@ -147,10 +145,6 @@ func Load(configPath string) (*ResolvedConfig, error) {
 	rc := &ResolvedConfig{}
 
 	// Start with file values, then override with env vars.
-	rc.CACert = envOrDefault("TALOSCTL_OIDC_CA_CERT", fileCfg.CACert)
-	rc.CAKey = envOrDefault("TALOSCTL_OIDC_CA_KEY", fileCfg.CAKey)
-	rc.CACertData = envOrDefault("TALOSCTL_OIDC_CA_CERT_DATA", fileCfg.CACertData)
-	rc.CAKeyData = envOrDefault("TALOSCTL_OIDC_CA_KEY_DATA", fileCfg.CAKeyData)
 	rc.TalosConfig = envOrDefault("TALOSCTL_OIDC_TALOS_CONFIG", fileCfg.TalosConfig)
 	rc.IssuerURL = envOrDefault("TALOSCTL_OIDC_ISSUER_URL", fileCfg.IssuerURL)
 	rc.ClientID = envOrDefault("TALOSCTL_OIDC_CLIENT_ID", fileCfg.ClientID)
@@ -216,12 +210,9 @@ func Load(configPath string) (*ResolvedConfig, error) {
 // descriptive error listing any missing configuration.
 func (rc *ResolvedConfig) Validate() error {
 	var missing []string
-	if rc.TalosConfig == "" && rc.CACert == "" && rc.CACertData == "" {
-		missing = append(missing, "ca_cert / TALOSCTL_OIDC_CA_CERT (or ca_cert_data / talos_config)")
-	}
-	if rc.TalosConfig == "" && rc.CAKey == "" && rc.CAKeyData == "" {
-		missing = append(missing, "ca_key / TALOSCTL_OIDC_CA_KEY (or ca_key_data / talos_config)")
-	}
+	// The server signs nothing locally: it delegates to the Talos API using a
+	// client credential (talos_config, or the in-cluster ServiceAccount), so no
+	// CA material is required.
 	if rc.IssuerURL == "" {
 		missing = append(missing, "issuer_url / TALOSCTL_OIDC_ISSUER_URL")
 	}

@@ -49,24 +49,10 @@ spec:
           env:
             - name: TALOSCTL_OIDC_INSECURE
               value: {{ if or .Values.config.insecure (and .Values.ingress.enabled .Values.ingress.tls) }}"true"{{ else }}"false"{{ end }}
-            {{- if and .Values.talos.caCertData .Values.talos.caKeyData }}
-            # Inline PEM mode: CA content is injected directly via environment variables.
-            - name: TALOSCTL_OIDC_CA_CERT_DATA
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "talosctl-oidc.fullname" . }}-ca-data
-                  key: ca.crt
-            - name: TALOSCTL_OIDC_CA_KEY_DATA
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "talosctl-oidc.fullname" . }}-ca-data
-                  key: ca.key
-            {{- else }}
-            - name: TALOSCTL_OIDC_CA_CERT
-              value: "/etc/talos/{{ .Values.talos.caSecretKeys.cert }}"
-            - name: TALOSCTL_OIDC_CA_KEY
-              value: "/etc/talos/{{ .Values.talos.caSecretKeys.key }}"
-            {{- end }}
+            # Talos API credential (talosconfig) provisioned by the Kubernetes
+            # Talos API access feature. The server signs nothing locally.
+            - name: TALOSCTL_OIDC_TALOS_CONFIG
+              value: "{{ .Values.talos.configMountPath }}/config"
             - name: TALOSCTL_OIDC_ISSUER_URL
               value: {{ .Values.config.issuerUrl | quote }}
             - name: TALOSCTL_OIDC_CLIENT_ID
@@ -120,22 +106,18 @@ spec:
               value: {{ join "," .Values.config.ipAllowlist | quote }}
             {{- end }}
           volumeMounts:
-            {{- if not (and .Values.talos.caCertData .Values.talos.caKeyData) }}
-            - name: talos-ca
-              mountPath: "/etc/talos"
+            - name: talos-credential
+              mountPath: {{ .Values.talos.configMountPath | quote }}
               readOnly: true
-            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
-        {{- if not (and .Values.talos.caCertData .Values.talos.caKeyData) }}
-        - name: talos-ca
+        - name: talos-credential
           secret:
-            secretName: {{ default (printf "%s-ca" (include "talosctl-oidc.fullname" .)) .Values.talos.caSecretName }}
-        {{- end }}
+            secretName: {{ .Values.talos.existingCredentialSecret | default (printf "%s-talos" (include "talosctl-oidc.fullname" .)) }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

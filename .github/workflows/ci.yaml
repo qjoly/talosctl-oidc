@@ -14,7 +14,6 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  TALOS_VERSION: v1.12.4
 
 jobs:
   build:
@@ -36,6 +35,7 @@ jobs:
 
       - name: Test
         run: go test ./...
+
 
   # -------------------------------------------------------------------
   # Integration test: full OIDC flow with Dex + certificate exchange
@@ -61,16 +61,18 @@ jobs:
       - name: Build binary
         run: go build -o talosctl-oidc .
 
-      - name: Generate test CA
+      - name: Build and start mock Talos API
         run: |
           mkdir -p test-env
-          openssl genrsa -out test-env/ca.key 4096 2>/dev/null
-          openssl req -new -x509 \
-            -key test-env/ca.key \
-            -out test-env/ca.crt \
-            -days 365 \
-            -subj "/CN=Test Talos CA/O=Test" \
-            2>/dev/null
+          go build -o test-env/mock-talos-api ./hack/mock-talos-api
+          test-env/mock-talos-api -talosconfig test-env/talosconfig -listen 127.0.0.1:50000 &
+          echo $! > test-env/mock.pid
+          echo "Waiting for mock talosconfig..."
+          for i in $(seq 1 30); do
+            [ -f test-env/talosconfig ] && break
+            sleep 1
+          done
+          test -f test-env/talosconfig || { echo "mock did not start"; exit 1; }
 
       - name: Write Dex configuration
         run: |
@@ -132,11 +134,10 @@ jobs:
           cat > test-env/server-config.yaml << SRVEOF
           issuer_url: http://localhost:${DEX_PORT}/dex
           client_id: ${CLIENT_ID}
-          ca_cert: $(pwd)/test-env/ca.crt
-          ca_key: $(pwd)/test-env/ca.key
+          talos_config: $(pwd)/test-env/talosconfig
           listen: ":${SERVER_PORT}"
           endpoints:
-            - localhost
+            - 127.0.0.1:50000
           cert_ttl: "5m"
           roles:
             - os:admin
@@ -318,18 +319,23 @@ jobs:
           fi
           echo "==> Returned certificate is valid X.509"
 
-          # Verify the certificate is signed by our test CA
+          # Verify the certificate is signed by the CA returned by the Talos API
           echo "$CERT_PEM" > /tmp/client-cert.pem
-          if openssl verify -CAfile test-env/ca.crt /tmp/client-cert.pem >/dev/null 2>&1; then
-            echo "==> Certificate correctly signed by test CA"
+          echo "$EXCHANGE_BODY" | python3 -c "import sys,json; sys.stdout.write(json.load(sys.stdin)['ca'])" > /tmp/issuing-ca.pem
+          if openssl verify -CAfile /tmp/issuing-ca.pem /tmp/client-cert.pem >/dev/null 2>&1; then
+            echo "==> Certificate correctly signed by the Talos-issued CA"
           else
-            echo "ERROR: Certificate is NOT signed by the test CA"
+            echo "ERROR: Certificate is NOT signed by the returned CA"
             exit 1
           fi
 
           # Check the certificate has the expected organization (role)
           CERT_ORG=$(echo "$CERT_PEM" | openssl x509 -noout -subject | grep -oP 'O = \K[^,/]+' || true)
           echo "==> Certificate organization (role): ${CERT_ORG}"
+          if [ "$CERT_ORG" != "os:admin" ]; then
+            echo "ERROR: expected role os:admin, got '${CERT_ORG}'"
+            exit 1
+          fi
 
           # Check TTL
           TTL=$(echo "$EXCHANGE_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['ttl_seconds'])")
@@ -364,47 +370,6 @@ jobs:
           # Remove the Dex container
           docker rm -f "$DEX_CONTAINER_NAME" 2>/dev/null || true
 
-  # -------------------------------------------------------------------
-  # Build and push the extension image with pr-<number> tag
-  # -------------------------------------------------------------------
-  extension-image:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-    needs: build
-    outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Compute PR tag
-        id: tag
-        run: echo "tag=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
-
-      - name: Update manifest version
-        run: |
-          sed -i "s/APP_VERSION/${{ steps.tag.outputs.tag }}/g" manifest.yaml
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push extension image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          target: extension
-          push: true
-          platforms: linux/amd64
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-talos-ext:${{ steps.tag.outputs.tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   # -------------------------------------------------------------------
   # Build and push the Kubernetes server image with pr-<number> tag
@@ -443,63 +408,6 @@ jobs:
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-server:${{ steps.tag.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  # -------------------------------------------------------------------
-  # Build and push the Talos installer image with pr-<number> tag
-  # -------------------------------------------------------------------
-  installer-image:
-    runs-on: ubuntu-latest
-    needs: extension-image
-    outputs:
-      tag: ${{ needs.extension-image.outputs.tag }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Setup crane
-        uses: imjasonh/setup-crane@v0.5
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Get extension digest
-        id: extension-digest
-        run: |
-          EXTENSION_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-talos-ext:${{ needs.extension-image.outputs.tag }}"
-          DIGEST=$(crane digest "${EXTENSION_IMAGE}" 2>/dev/null || true)
-          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
-
-      - name: Build and push installer image
-        run: |
-          TAG="${{ needs.extension-image.outputs.tag }}"
-          DIGEST="${{ steps.extension-digest.outputs.digest }}"
-
-          if [ -n "${DIGEST}" ]; then
-            EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-talos-ext:${TAG}@${DIGEST}"
-          else
-            EXTENSION_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-talos-ext:${TAG}"
-          fi
-
-          echo "Using extension reference: ${EXTENSION_REF}"
-          INSTALLER_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-installer:${TAG}"
-
-          docker run --rm -t \
-            -v $PWD/_out:/out \
-            ghcr.io/siderolabs/imager:${{ env.TALOS_VERSION }} installer \
-            --system-extension-image "${EXTENSION_REF}"
-
-          for tar in _out/*.tar; do
-            [ -f "$tar" ] || continue
-            echo "Pushing $tar to $INSTALLER_IMAGE"
-            crane push "$tar" "$INSTALLER_IMAGE"
-          done
 
   # -------------------------------------------------------------------
   # Package and push the Helm chart to GHCR OCI with pr-<number> tag
@@ -541,7 +449,7 @@ jobs:
   # -------------------------------------------------------------------
   pr-comment:
     runs-on: ubuntu-latest
-    needs: [installer-image, helm-chart, server-image]
+    needs: [helm-chart, server-image]
     steps:
       - name: Find existing comment
         uses: peter-evans/find-comment@v4
@@ -564,27 +472,17 @@ jobs:
 
             | Image | Tag |
             |-------|-----|
-            | Extension | `ghcr.io/${{ github.repository }}-talos-ext:${{ needs.installer-image.outputs.tag }}` |
-            | Server (Kubernetes) | `ghcr.io/${{ github.repository }}-server:${{ needs.installer-image.outputs.tag }}` |
-            | Installer | `ghcr.io/${{ github.repository }}-installer:${{ needs.installer-image.outputs.tag }}` |
-            | Helm chart | `oci://ghcr.io/${{ github.repository_owner }}/charts/talosctl-oidc:0.0.0-${{ needs.installer-image.outputs.tag }}` |
-
-            ### Upgrade a Talos node with this PR
-
-            ```bash
-            talosctl upgrade --image ghcr.io/${{ github.repository }}-installer:${{ needs.installer-image.outputs.tag }}
-            ```
+            | Server (Kubernetes) | `ghcr.io/${{ github.repository }}-server:${{ needs.server-image.outputs.tag }}` |
+            | Helm chart | `oci://ghcr.io/${{ github.repository_owner }}/charts/talosctl-oidc:0.0.0-${{ needs.server-image.outputs.tag }}` |
 
             ### Deploy on Kubernetes with Helm
 
             ```bash
             helm install talosctl-oidc \
               oci://ghcr.io/${{ github.repository_owner }}/charts/talosctl-oidc \
-              --version 0.0.0-${{ needs.installer-image.outputs.tag }} \
+              --version 0.0.0-${{ needs.server-image.outputs.tag }} \
               --namespace talos-system --create-namespace \
-              --set talos.apiAccess.enabled=false \
-              --set-string "talos.caCertData=$(cat talos-ca.crt)" \
-              --set-string "talos.caKeyData=$(cat talos-ca.key)" \
+              --set talos.apiAccess.enabled=true \
               --set config.issuerUrl=https://your-oidc-provider/ \
               --set config.clientId=your-client-id \
               --set "config.endpoints={10.0.0.1}"
@@ -598,8 +496,7 @@ jobs:
             go build -o talosctl-oidc .
 
             # Start the server
-            TALOSCTL_OIDC_CA_CERT=talos-ca.crt \
-            TALOSCTL_OIDC_CA_KEY=talos-ca.key \
+            TALOSCTL_OIDC_TALOS_CONFIG=./talosconfig \
             TALOSCTL_OIDC_ISSUER_URL=https://your-oidc-provider/.well-known/openid-configuration \
             TALOSCTL_OIDC_CLIENT_ID=your-client-id \
             TALOSCTL_OIDC_ENDPOINTS=10.0.0.1 \

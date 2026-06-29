@@ -4,7 +4,6 @@ image:
   # The server image is a standard scratch image with the binary at /talosctl-oidc
   # and the system CA bundle at /etc/ssl/certs/ca-certificates.crt.
   # It is suitable for running as a Kubernetes Deployment.
-  # The extension image (ghcr.io/qjoly/talosctl-oidc-talos-ext) is for Talos system extensions only.
   repository: ghcr.io/qjoly/talosctl-oidc-server
   pullPolicy: Always
   tag: "latest"
@@ -159,29 +158,41 @@ config:
   #     - 10.0.0.50
   ipAllowlist: []
 
-# Talos CA Configuration
+# Talos API access
+#
+# The server issues certificates by calling the Talos API
+# (GenerateClientConfiguration), so it never holds the cluster CA private key.
+# It authenticates with a credential provisioned by the Talos "Kubernetes Talos
+# API access" feature.
+#
+# Prerequisite on the Talos nodes (machine config):
+#
+#   machine:
+#     features:
+#       kubernetesTalosAPIAccess:
+#         enabled: true
+#         allowedRoles:
+#           - os:admin
+#         allowedKubernetesNamespaces:
+#           - <release namespace>
 talos:
-  # Name of an existing secret containing the Talos CA cert and key.
-  # Leave empty to have the chart create the secret from caCert/caKey below.
-  # Keys inside the secret must match caSecretKeys below.
-  caSecretName: ""
+  apiAccess:
+    # When true, the chart creates a serviceaccounts.talos.dev resource so Talos
+    # provisions a short-lived API credential into a Secret, mounted into the pod.
+    enabled: true
 
-  # Keys inside the secret.
-  # Defaults match manually-created secrets (talos-ca.crt / talos-ca.key).
-  caSecretKeys:
-    cert: "talos-ca.crt"
-    key: "talos-ca.key"
+    # Roles granted to the server's own credential. The certificates the server
+    # can issue are bounded by these roles — Talos rejects privilege escalation.
+    # Must be a subset of allowedRoles in the machine config and a superset of
+    # config.roles.
+    roles:
+      - os:admin
 
-  # Inline CA contents as file paths — the chart creates a Secret from these values
-  # and mounts it into the pod as files.
-  # Not recommended for production GitOps repositories; prefer caCertData/caKeyData
-  # via an external secret manager or existingSecret.
-  caCert: ""
-  caKey: ""
+  # Mount path for the provisioned talosconfig. The server reads it via
+  # TALOSCTL_OIDC_TALOS_CONFIG (<configMountPath>/config).
+  configMountPath: /var/run/secrets/talos.dev
 
-  # Inline CA PEM content passed directly as environment variables (no file mount).
-  # The chart stores these in a Secret and injects them via TALOSCTL_OIDC_CA_CERT_DATA
-  # and TALOSCTL_OIDC_CA_KEY_DATA. Takes precedence over caCert/caKey when set.
-  # Ignored when caSecretName is set.
-  caCertData: ""
-  caKeyData: ""
+  # Use an existing talosconfig Secret (must contain a "config" key) instead of
+  # having the chart create a serviceaccounts.talos.dev resource. When set,
+  # apiAccess.enabled is ignored.
+  existingCredentialSecret: ""
