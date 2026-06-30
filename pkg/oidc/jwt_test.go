@@ -73,7 +73,7 @@ func TestValidateIDToken_Expired(t *testing.T) {
 		mac.Write([]byte(input))
 		return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 	})
-	_, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", secret)
+	_, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", secret, []string{"HS256"})
 	if err == nil {
 		t.Error("expected error for expired token")
 	}
@@ -94,7 +94,7 @@ func TestValidateIDToken_ValidHS256(t *testing.T) {
 		mac.Write([]byte(input))
 		return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 	})
-	result, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", secret)
+	result, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", secret, []string{"HS256"})
 	if err != nil {
 		t.Fatalf("expected no error for valid token, got %v", err)
 	}
@@ -120,7 +120,7 @@ func TestValidateIDToken_IssuerTrailingSlash(t *testing.T) {
 		return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 	})
 	// Expected issuer without trailing slash — should still match
-	_, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", secret)
+	_, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", secret, []string{"HS256"})
 	if err != nil {
 		t.Errorf("expected issuer trailing slash to be normalized, got error: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestValidateIDToken_IssuerMismatch(t *testing.T) {
 		mac.Write([]byte(input))
 		return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 	})
-	_, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", secret)
+	_, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", secret, []string{"HS256"})
 	if err == nil {
 		t.Error("expected error for issuer mismatch")
 	}
@@ -162,7 +162,7 @@ func TestValidateIDToken_AudienceMismatch(t *testing.T) {
 		mac.Write([]byte(input))
 		return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 	})
-	_, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", secret)
+	_, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", secret, []string{"HS256"})
 	if err == nil {
 		t.Error("expected error for audience mismatch")
 	}
@@ -183,7 +183,7 @@ func TestValidateIDToken_InvalidSignature(t *testing.T) {
 		return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 	})
 	// Validate with wrong secret
-	_, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", "wrong-secret")
+	_, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", "wrong-secret", []string{"HS256"})
 	if err == nil {
 		t.Error("expected error for invalid signature")
 	}
@@ -203,7 +203,7 @@ func TestValidateIDToken_MissingExpClaim(t *testing.T) {
 		mac.Write([]byte(input))
 		return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 	})
-	_, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", secret)
+	_, err := ValidateIDToken(token, nil, "https://issuer.example.com", "client-id", secret, []string{"HS256"})
 	if err == nil {
 		t.Error("expected error for token missing exp claim")
 	}
