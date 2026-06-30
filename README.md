@@ -993,6 +993,8 @@ rate_limit_window: "1m"
 
 **Example:** Allow 10 requests per minute per IP. Additional requests receive `429 Too Many Requests` with a `Retry-After` header.
 
+> **Per-IP key behind a proxy:** the rate-limit bucket is keyed on the connection address by default. `X-Forwarded-For` is only used when the request's direct peer is listed in `trusted_proxies` — otherwise a client could rotate the header to mint a fresh bucket on every request, bypassing the limit. Set `trusted_proxies` (env `TALOSCTL_OIDC_TRUSTED_PROXIES`) to your ingress/proxy network.
+
 ### IP Allowlist
 
 IP allowlisting restricts access to the `/exchange` endpoint to specific IP addresses or CIDR ranges.

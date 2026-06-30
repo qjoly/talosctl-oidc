@@ -9,13 +9,13 @@ import (
 
 func TestRateLimiter_Allow(t *testing.T) {
 	// Test disabled rate limiter (requests = 0).
-	l := New(0, time.Minute)
+	l := New(0, time.Minute, nil)
 	if l.IsEnabled() {
 		t.Error("IsEnabled() should return false when requests is 0 (disabled)")
 	}
 
 	// Test with limit of 2 requests per minute.
-	l = New(2, time.Minute)
+	l = New(2, time.Minute, nil)
 	if !l.IsEnabled() {
 		t.Error("IsEnabled() should return true with positive requests")
 	}
@@ -41,7 +41,7 @@ func TestRateLimiter_Allow(t *testing.T) {
 
 func TestRateLimiter_Window(t *testing.T) {
 	// Test with a very short window.
-	l := New(1, 50*time.Millisecond)
+	l := New(1, 50*time.Millisecond, nil)
 
 	// First request allowed.
 	if !l.Allow("192.168.1.1") {
@@ -63,7 +63,7 @@ func TestRateLimiter_Window(t *testing.T) {
 }
 
 func TestRateLimiter_Middleware(t *testing.T) {
-	l := New(1, time.Minute)
+	l := New(1, time.Minute, nil)
 
 	// Create a simple handler that returns 200.
 	handler := l.Middleware(func(w http.ResponseWriter, r *http.Request) {
@@ -96,6 +96,7 @@ func TestRateLimiter_Middleware(t *testing.T) {
 func TestExtractIP(t *testing.T) {
 	tests := []struct {
 		name       string
+		trusted    []string
 		remoteAddr string
 		forwarded  string
 		want       string
@@ -106,28 +107,40 @@ func TestExtractIP(t *testing.T) {
 			want:       "192.168.1.1",
 		},
 		{
-			name:       "X-Forwarded-For single",
+			// Disclosure regression: with no trusted proxies, a spoofed
+			// X-Forwarded-For must not mint a fresh bucket — the key is the
+			// real connection address.
+			name:       "spoofed XFF without trusted proxy is ignored",
+			remoteAddr: "203.0.113.7:12345",
+			forwarded:  "1.2.3.4",
+			want:       "203.0.113.7",
+		},
+		{
+			name:       "XFF honored from trusted proxy",
+			trusted:    []string{"10.0.0.0/8"},
 			remoteAddr: "10.0.0.1:12345",
 			forwarded:  "192.168.1.100",
 			want:       "192.168.1.100",
 		},
 		{
-			name:       "X-Forwarded-For multiple",
+			name:       "XFF chain skips trusted hops",
+			trusted:    []string{"10.0.0.0/8"},
 			remoteAddr: "10.0.0.1:12345",
-			forwarded:  "192.168.1.100, 10.0.0.2, 10.0.0.3",
+			forwarded:  "1.1.1.1, 192.168.1.100, 10.0.0.2, 10.0.0.3",
 			want:       "192.168.1.100",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			l := New(1, time.Minute, tt.trusted)
 			req := httptest.NewRequest("GET", "/", nil)
 			req.RemoteAddr = tt.remoteAddr
 			if tt.forwarded != "" {
 				req.Header.Set("X-Forwarded-For", tt.forwarded)
 			}
 
-			got := extractIP(req)
+			got := l.extractIP(req)
 			if got != tt.want {
 				t.Errorf("extractIP() = %v, want %v", got, tt.want)
 			}
@@ -137,7 +150,7 @@ func TestExtractIP(t *testing.T) {
 
 func TestRateLimiter_Cleanup(t *testing.T) {
 	// Create limiter with short window.
-	l := New(10, 100*time.Millisecond)
+	l := New(10, 100*time.Millisecond, nil)
 
 	// Add requests from multiple IPs.
 	l.Allow("192.168.1.1")

@@ -187,7 +187,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if window <= 0 {
 			window = time.Minute
 		}
-		rateLimiter = ratelimit.New(rc.RateLimitRequests, window)
+		rateLimiter = ratelimit.New(rc.RateLimitRequests, window, rc.TrustedProxies)
 		cleanupStop := rateLimiter.StartCleanup(5 * time.Minute)
 		defer close(cleanupStop)
 		log.Printf("Rate limiting: enabled (%d requests per %v)", rc.RateLimitRequests, window)

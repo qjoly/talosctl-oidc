@@ -18,6 +18,7 @@ type Limiter struct {
 	window   time.Duration // Time window for rate limiting
 	clients  map[string]*client
 	mu       sync.RWMutex
+	trusted  []net.IPNet // Trusted proxy networks; X-Forwarded-For is only honored from these.
 }
 
 // client tracks request timestamps for a single IP.
@@ -28,7 +29,11 @@ type client struct {
 
 // New creates a new rate limiter with the specified request limit and window.
 // If requests is 0, rate limiting is disabled.
-func New(requests int, window time.Duration) *Limiter {
+//
+// trustedProxies lists CIDRs/IPs of reverse proxies allowed to set
+// X-Forwarded-For. When empty, X-Forwarded-For is never trusted and the
+// direct connection address is used as the rate-limit key.
+func New(requests int, window time.Duration, trustedProxies []string) *Limiter {
 	if window <= 0 {
 		window = time.Minute
 	}
@@ -36,7 +41,32 @@ func New(requests int, window time.Duration) *Limiter {
 		requests: requests,
 		window:   window,
 		clients:  make(map[string]*client),
+		trusted:  parseNets(trustedProxies),
 	}
+}
+
+// parseNets parses a list of CIDRs or single IPs into networks. A bare IP is
+// treated as a host network (/32 or /128). Unparseable entries are skipped.
+func parseNets(entries []string) []net.IPNet {
+	var nets []net.IPNet
+	for _, s := range entries {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ipnet, err := net.ParseCIDR(s); err == nil {
+			nets = append(nets, *ipnet)
+			continue
+		}
+		if ip := net.ParseIP(s); ip != nil {
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			nets = append(nets, net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+		}
+	}
+	return nets
 }
 
 // IsEnabled returns true if rate limiting is enabled.
@@ -85,25 +115,47 @@ func (l *Limiter) Allow(ip string) bool {
 	return true
 }
 
-// extractIP extracts the client IP from the request, handling X-Forwarded-For header.
-func extractIP(r *http.Request) string {
-	// Check X-Forwarded-For header first (for requests behind proxy).
-	forwarded := r.Header.Get("X-Forwarded-For")
-	if forwarded != "" {
-		// Take the first IP if multiple are present.
-		ips := strings.Split(forwarded, ",")
-		if len(ips) > 0 {
-			ip := strings.TrimSpace(ips[0])
-			return ip
+// extractIP returns the rate-limit key (client IP) for the request.
+//
+// X-Forwarded-For is attacker-controlled, so it is only honored when the
+// direct connection peer (RemoteAddr) is a configured trusted proxy. In that
+// case we walk the header right-to-left and return the first address that is
+// not itself a trusted proxy — the real client as seen by our proxy chain.
+// Otherwise the direct peer address is used, which cannot be spoofed to mint
+// fresh buckets or exhaust another client's bucket.
+func (l *Limiter) extractIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+
+	if l.isTrustedProxy(host) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			for i := len(parts) - 1; i >= 0; i-- {
+				ip := strings.TrimSpace(parts[i])
+				if !l.isTrustedProxy(ip) {
+					return ip
+				}
+			}
 		}
 	}
 
-	// Fall back to RemoteAddr.
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+	return host
+}
+
+// isTrustedProxy reports whether ip belongs to a configured trusted proxy network.
+func (l *Limiter) isTrustedProxy(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
 	}
-	return ip
+	for _, n := range l.trusted {
+		if n.Contains(parsed) {
+			return true
+		}
+	}
+	return false
 }
 
 // Middleware returns an HTTP middleware that applies rate limiting.
@@ -115,7 +167,7 @@ func (l *Limiter) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		ip := extractIP(r)
+		ip := l.extractIP(r)
 		if !l.Allow(ip) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(l.window.Seconds())))
