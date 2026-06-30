@@ -199,7 +199,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	var ipAllowlist *allowlist.Allowlist
 	if len(rc.IPAllowlist) > 0 {
 		var err error
-		ipAllowlist, err = allowlist.New(rc.IPAllowlist)
+		ipAllowlist, err = allowlist.New(rc.IPAllowlist, rc.TrustedProxies)
 		if err != nil {
 			return fmt.Errorf("initializing IP allowlist: %w", err)
 		}

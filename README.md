@@ -357,6 +357,7 @@ The server can be configured via **YAML configuration file** or **environment va
 | `TALOSCTL_OIDC_RATE_LIMIT_REQUESTS` | `rate_limit_requests` | No | `0` | Max requests per IP per window (0 = disabled) |
 | `TALOSCTL_OIDC_RATE_LIMIT_WINDOW` | `rate_limit_window` | No | `1m` | Rate limit time window (e.g., `1m`, `5m`, `1h`) |
 | `TALOSCTL_OIDC_IP_ALLOWLIST` | `ip_allowlist` | No | | Comma-separated list of allowed IPs/CIDRs (empty = allow all) |
+| `TALOSCTL_OIDC_TRUSTED_PROXIES` | `trusted_proxies` | No | | Comma-separated IPs/CIDRs of reverse proxies allowed to set `X-Forwarded-For` (empty = header never trusted) |
 | `DEBUG` | — | No | | Set to any value to enable detailed debug logging (includes RBAC rule evaluation) |
 
 #### TLS Modes
@@ -1013,7 +1014,19 @@ ip_allowlist:
   - 172.16.0.0/16
 ```
 
-**Note:** The server respects the `X-Forwarded-For` header for determining client IP when running behind a reverse proxy. Requests from IPs not in the allowlist receive `403 Forbidden`.
+**Note:** Requests from IPs not in the allowlist receive `403 Forbidden`.
+
+> **Running behind a reverse proxy?** The `X-Forwarded-For` header is only honored when the request's direct peer is listed in `trusted_proxies` (see below). Otherwise the header is attacker-controlled and is ignored in favor of the real connection address — without this, anyone could forge `X-Forwarded-For` to bypass the allowlist.
+
+```bash
+export TALOSCTL_OIDC_TRUSTED_PROXIES="10.0.0.0/8,192.168.0.1"
+```
+
+```yaml
+trusted_proxies:
+  - 10.0.0.0/8
+  - 192.168.0.1
+```
 
 ### Helm Chart Configuration
 

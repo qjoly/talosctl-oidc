@@ -8,7 +8,7 @@ import (
 
 func TestAllowlist_New(t *testing.T) {
 	// Test empty allowlist (allow all).
-	a, err := New([]string{})
+	a, err := New([]string{}, nil)
 	if err != nil {
 		t.Errorf("New() with empty list should not error: %v", err)
 	}
@@ -17,7 +17,7 @@ func TestAllowlist_New(t *testing.T) {
 	}
 
 	// Test with valid IPs.
-	a, err = New([]string{"192.168.1.1", "10.0.0.0/8"})
+	a, err = New([]string{"192.168.1.1", "10.0.0.0/8"}, nil)
 	if err != nil {
 		t.Errorf("New() with valid IPs should not error: %v", err)
 	}
@@ -26,14 +26,14 @@ func TestAllowlist_New(t *testing.T) {
 	}
 
 	// Test with invalid input.
-	_, err = New([]string{"invalid-ip"})
+	_, err = New([]string{"invalid-ip"}, nil)
 	if err == nil {
 		t.Error("New() should error with invalid IP")
 	}
 }
 
 func TestAllowlist_Allowed(t *testing.T) {
-	a, err := New([]string{"192.168.1.0/24", "10.0.0.50"})
+	a, err := New([]string{"192.168.1.0/24", "10.0.0.50"}, nil)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestAllowlist_Allowed(t *testing.T) {
 
 func TestAllowlist_AllowedEmpty(t *testing.T) {
 	// Empty allowlist should allow all.
-	a, _ := New([]string{})
+	a, _ := New([]string{}, nil)
 
 	tests := []string{"192.168.1.1", "10.0.0.1", "0.0.0.0", "255.255.255.255"}
 	for _, ip := range tests {
@@ -74,7 +74,7 @@ func TestAllowlist_AllowedEmpty(t *testing.T) {
 }
 
 func TestAllowlist_Middleware(t *testing.T) {
-	a, _ := New([]string{"192.168.1.0/24"})
+	a, _ := New([]string{"192.168.1.0/24"}, nil)
 
 	// Create a handler that returns 200.
 	handler := a.Middleware(func(w http.ResponseWriter, r *http.Request) {
@@ -108,6 +108,7 @@ func TestAllowlist_Middleware(t *testing.T) {
 func TestExtractIP(t *testing.T) {
 	tests := []struct {
 		name       string
+		trusted    []string
 		remoteAddr string
 		forwarded  string
 		want       string
@@ -118,28 +119,44 @@ func TestExtractIP(t *testing.T) {
 			want:       "192.168.1.1",
 		},
 		{
-			name:       "X-Forwarded-For single",
+			// Disclosure regression: no trusted proxies configured, so a
+			// spoofed X-Forwarded-For must be ignored in favor of RemoteAddr.
+			name:       "spoofed XFF without trusted proxy is ignored",
+			remoteAddr: "203.0.113.7:12345",
+			forwarded:  "192.168.1.100",
+			want:       "203.0.113.7",
+		},
+		{
+			name:       "XFF honored from trusted proxy",
+			trusted:    []string{"10.0.0.0/8"},
 			remoteAddr: "10.0.0.1:12345",
 			forwarded:  "192.168.1.100",
 			want:       "192.168.1.100",
 		},
 		{
-			name:       "X-Forwarded-For multiple",
+			// Right-most untrusted entry is the real client; trailing trusted
+			// hops are skipped, and a spoofed left-most entry cannot win.
+			name:       "XFF chain skips trusted hops",
+			trusted:    []string{"10.0.0.0/8"},
 			remoteAddr: "10.0.0.1:12345",
-			forwarded:  "192.168.1.100, 10.0.0.2, 10.0.0.3",
+			forwarded:  "1.1.1.1, 192.168.1.100, 10.0.0.2, 10.0.0.3",
 			want:       "192.168.1.100",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			a, err := New(nil, tt.trusted)
+			if err != nil {
+				t.Fatalf("New() error: %v", err)
+			}
 			req := httptest.NewRequest("GET", "/", nil)
 			req.RemoteAddr = tt.remoteAddr
 			if tt.forwarded != "" {
 				req.Header.Set("X-Forwarded-For", tt.forwarded)
 			}
 
-			got := extractIP(req)
+			got := a.extractIP(req)
 			if got != tt.want {
 				t.Errorf("extractIP() = %v, want %v", got, tt.want)
 			}
