@@ -142,9 +142,10 @@ type Server struct {
 	bruteForce *bruteForceProtector
 
 	// jwksCache caches the JWKS to avoid fetching it on every /exchange request.
-	// It is initialized lazily on the first call to validateToken.
-	jwksCache     *oidc.JWKSCache
-	jwksCacheOnce sync.Once
+	// It is initialized lazily on the first call to validateToken, guarded by
+	// jwksCacheMu. A failed discovery leaves it nil so the next request retries.
+	jwksCache   *oidc.JWKSCache
+	jwksCacheMu sync.Mutex
 }
 
 // New creates a new cert exchange server.
@@ -656,6 +657,27 @@ type tokenClaims struct {
 	Claims  map[string]interface{} // All claims from the token for RBAC evaluation
 }
 
+// jwksCacheForIssuer returns the JWKS cache, performing OIDC discovery once on
+// the first successful call. Initialization is guarded by a mutex; a failed
+// discovery returns the error without caching it, so the next call retries.
+func (s *Server) jwksCacheForIssuer(ctx context.Context) (*oidc.JWKSCache, error) {
+	s.jwksCacheMu.Lock()
+	defer s.jwksCacheMu.Unlock()
+
+	if s.jwksCache != nil {
+		return s.jwksCache, nil
+	}
+
+	provider, err := oidc.Discover(ctx, s.cfg.IssuerURL)
+	if err != nil {
+		return nil, fmt.Errorf("OIDC discovery failed: %w", err)
+	}
+	debug("OIDC provider discovered, JWKS URI: %s", provider.JWKSURI)
+
+	s.jwksCache = oidc.NewJWKSCache(provider.JWKSURI, 5*time.Minute)
+	return s.jwksCache, nil
+}
+
 // validateToken verifies the OIDC ID token against the provider.
 // It checks:
 // - The token signature via the provider's JWKS
@@ -668,25 +690,15 @@ func (s *Server) validateToken(ctx context.Context, idToken string) (*tokenClaim
 	debug("Starting token validation for issuer: %s", s.cfg.IssuerURL)
 
 	// Initialize the JWKS cache on the first call by performing OIDC discovery.
-	// Subsequent calls reuse the same cache instance.
-	var initErr error
-	s.jwksCacheOnce.Do(func() {
-		provider, err := oidc.Discover(ctx, s.cfg.IssuerURL)
-		if err != nil {
-			initErr = fmt.Errorf("OIDC discovery failed: %w", err)
-			// Reset once so discovery is retried on the next request.
-			s.jwksCacheOnce = sync.Once{}
-			return
-		}
-		debug("OIDC provider discovered, JWKS URI: %s", provider.JWKSURI)
-		s.jwksCache = oidc.NewJWKSCache(provider.JWKSURI, 5*time.Minute)
-	})
-	if initErr != nil {
-		return nil, initErr
+	// Subsequent calls reuse the same cache instance; a failed discovery is not
+	// cached, so the next request retries.
+	cache, err := s.jwksCacheForIssuer(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Fetch the JWKS from the cache (refreshed automatically when the TTL expires).
-	jwks, err := s.jwksCache.Get(ctx)
+	jwks, err := cache.Get(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetching JWKS: %w", err)
 	}
