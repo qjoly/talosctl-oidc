@@ -169,7 +169,7 @@ jobs:
               --password-stdin
 
       - name: Setup crane
-        uses: imjasonh/setup-crane@v0.5
+        uses: imjasonh/setup-crane@v0.7
 
       - name: Package Helm chart
         run: |
