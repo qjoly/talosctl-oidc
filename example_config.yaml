@@ -2,9 +2,14 @@ issuer_url: https://oidc.home.une-tasse-de.cafe/application/o/talos-oidc/
 client_id: talosctl_oidc # Required
 
 # Talos Configuration
-# You can provide the CA via file paths OR inline data
-ca_cert: temp/talos-ca.crt
-ca_key: temp/talos-api-ca.key
+#
+# Certificates are issued via the Talos API (GenerateClientConfiguration), so
+# this server never holds the CA private key and the roles it can grant are
+# bounded by its own credential. In-cluster, leave talos_config empty to use the
+# credential provisioned by the talos.dev ServiceAccount
+# (machine.features.kubernetesTalosAPIAccess). Set it only to point at an
+# explicit talosconfig.
+# talos_config: /var/run/secrets/talos.dev/config
 
 rate_limit_requests: 10
 rate_limit_window: "1m"

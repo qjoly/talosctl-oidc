@@ -8,10 +8,10 @@ OIDC certificate exchange server and client for [Talos Linux](https://www.talos.
 
 Talos Linux uses **mTLS (mutual TLS) with client certificates** for API authentication. There is no native OIDC support in the Talos API. This tool bridges the gap through a **certificate exchange server** model:
 
-1. A **server** (`talosctl-oidc serve`) holds the Talos CA private key and runs alongside the cluster (as a Talos extension or standalone)
+1. A **server** (`talosctl-oidc serve`) runs alongside the cluster (on Kubernetes or standalone). It never holds the Talos CA private key. Instead it authenticates to the Talos API with its own client credential (a talosconfig)
 2. A **user** runs `talosctl-oidc login`, which opens a browser for OIDC authentication (Authorization Code + PKCE)
 3. The client sends the resulting ID token to the server
-4. The server validates the token (signature, issuer, audience, expiry) and signs an **ephemeral short-lived client certificate** (default: 5 minutes)
+4. The server validates the token (signature, issuer, audience, expiry) and calls the Talos API method `GenerateClientConfiguration` (the same RPC `talosctl config new` uses) to mint an **ephemeral short-lived client certificate** (default: 5 minutes). The Talos node signs the certificate with the CA it already holds. The roles the server can grant are bounded by its own credential's roles (Talos rejects privilege escalation)
 5. The client writes the certificate to `~/.talos/config` (using atomic updates to prevent corruption)
 6. Before expiry, the client can proactively renew the certificate using the OIDC refresh token, either on demand or in the background via the `--watch` flag
 
@@ -34,7 +34,8 @@ sequenceDiagram
     Client->>Server: POST /exchange {id_token}
     Server->>OIDC: Fetch JWKS & validate token
     OIDC->>Server: Public keys
-    Server->>Server: Sign ephemeral cert with Talos CA
+    Server->>Talos: GenerateClientConfiguration (Talos API)
+    Talos->>Server: Ephemeral cert signed by the node's CA
     Server->>Client: {ca, cert, key, endpoints}
     Client->>Client: Write to ~/.talos/config
     User->>Talos: talosctl version (mTLS with ephemeral cert)
@@ -48,7 +49,7 @@ sequenceDiagram
 
 - **Go 1.25+** (to build from source)
 - **A running Talos cluster** with API access
-- **The Talos API CA certificate and private key** (from `controlplane.yaml`, the first `ca:` block under `machine.ca`)
+- **A Talos API client credential** (a talosconfig) for the server. On Kubernetes this is provisioned automatically via Talos API access; standalone, you generate one with `talosctl config new`
 - **An OIDC provider** with a configured client application (any OIDC-compliant provider works)
 
 ## Installation
@@ -117,32 +118,6 @@ go build -o talosctl-oidc .
 sudo mv talosctl-oidc /usr/local/bin/
 ```
 
-### As a Talos system extension
-
-Build the extension image, then use the Talos `imager` to create a custom installer that includes it:
-
-```bash
-# Build and push the extension OCI image
-docker build -t ghcr.io/qjoly/talosctl-oidc-talos-ext:v0.1.0 --target extension .
-docker push ghcr.io/qjoly/talosctl-oidc-talos-ext:v0.1.0
-
-# Build a custom Talos installer with the extension baked in
-TALOS_VERSION=v1.12.4
-EXTENSION_REF=$(crane digest ghcr.io/qjoly/talosctl-oidc-talos-ext:v0.1.0)
-
-docker run --rm -t -v $PWD/_out:/out \
-  ghcr.io/siderolabs/imager:${TALOS_VERSION} installer \
-  --system-extension-image ghcr.io/qjoly/talosctl-oidc-talos-ext:v0.1.0@${EXTENSION_REF}
-
-# Push the custom installer to your registry
-crane push _out/installer-amd64.tar ghcr.io/qjoly/talosctl-oidc-installer:${TALOS_VERSION}
-
-# Install or upgrade with it
-talosctl upgrade --image ghcr.io/qjoly/talosctl-oidc-installer:${TALOS_VERSION}
-```
-
-See [Deploying as a Talos Extension](#deploying-as-a-talos-extension) for detailed configuration.
-
 ## Setup
 
 ### 1. Configure your OIDC provider
@@ -186,17 +161,26 @@ staticClients:
     public: true
 ```
 
-### 2. Extract the Talos API CA
+### 2. Enable Talos API access
 
-The server needs the Talos API CA certificate and private key to sign client certificates. These are found in your cluster's `controlplane.yaml` (the first `ca:` block under `machine:`).
+The server mints certificates by calling the Talos API, so it never needs the CA private key. Enable the `kubernetesTalosAPIAccess` feature on your control plane nodes and bound the roles and namespaces the API may grant.
 
-```bash
-# From controlplane.yaml, extract the first ca block
-yq '.machine.ca.crt' controlplane.yaml | base64 -d > talos-ca.crt
-yq '.machine.ca.key' controlplane.yaml | base64 -d > talos-ca.key
+Add this to your control plane machine config (then `talosctl apply-config`):
+
+```yaml
+machine:
+  features:
+    kubernetesTalosAPIAccess:
+      enabled: true
+      allowedRoles:
+        - os:admin
+      allowedKubernetesNamespaces:
+        - talos-system   # the namespace the server runs in
 ```
 
-> **Important**: This is the **machine/API CA**, not the OS-level CA from `secrets.yaml`. The API CA is the one that signs client certificates used by `talosctl`.
+> **Note**: `allowedRoles` bounds the roles the server's credential can hold. The server can never grant a role beyond this set, since Talos rejects privilege escalation.
+
+For a standalone (non-Kubernetes) deployment, you instead generate a talosconfig credential with `talosctl config new` (see the [standalone section](#deploying-as-a-standalone-systemd-service)).
 
 ### 3. Start the server
 
@@ -218,8 +202,10 @@ client_id: your-client-id
 endpoints:
   - 10.0.0.1
   - 10.0.0.2
-ca_cert: talos-ca.crt
-ca_key: talos-ca.key
+# Path to the talosconfig credential used to call the Talos API.
+# Leave empty in-cluster to use the credential provisioned by the
+# talos.dev ServiceAccount at /var/run/secrets/talos.dev/config.
+talos_config: /etc/talosctl-oidc/talosconfig
 listen: ":8443"
 cert_ttl: "5m"
 
@@ -264,8 +250,7 @@ talosctl-oidc serve
 Configure entirely via environment variables:
 
 ```bash
-export TALOSCTL_OIDC_CA_CERT=talos-ca.crt
-export TALOSCTL_OIDC_CA_KEY=talos-ca.key
+export TALOSCTL_OIDC_TALOS_CONFIG=/etc/talosctl-oidc/talosconfig
 export TALOSCTL_OIDC_ISSUER_URL=https://idp.example.com/application/o/talos-oidc/
 export TALOSCTL_OIDC_CLIENT_ID=<your-client-id>
 export TALOSCTL_OIDC_ENDPOINTS=10.0.0.1,10.0.0.2
@@ -355,11 +340,7 @@ The server can be configured via **YAML configuration file** or **environment va
 
 | Variable | Config File Field | Required | Default | Description |
 |----------|-------------------|----------|---------|-------------|
-| `TALOSCTL_OIDC_CA_CERT` | `ca_cert` | Yes* | | Path to Talos CA certificate |
-| `TALOSCTL_OIDC_CA_KEY` | `ca_key` | Yes* | | Path to Talos CA private key |
-| `TALOSCTL_OIDC_CA_CERT_DATA` | `ca_cert_data` | Yes* | | Inline PEM-encoded CA certificate |
-| `TALOSCTL_OIDC_CA_KEY_DATA` | `ca_key_data` | Yes* | | Inline PEM-encoded CA private key |
-| `TALOSCTL_OIDC_TALOS_CONFIG` | `talos_config` | Yes* | | Path to talosconfig YAML file |
+| `TALOSCTL_OIDC_TALOS_CONFIG` | `talos_config` | No | | Path to the talosconfig credential used to call the Talos API. Empty in-cluster uses the credential provisioned at `/var/run/secrets/talos.dev/config` |
 | `TALOSCTL_OIDC_ISSUER_URL` | `issuer_url` | Yes | | OIDC issuer URL for token validation |
 | `TALOSCTL_OIDC_CLIENT_ID` | `client_id` | Yes | | Expected OIDC client ID / audience |
 | `TALOSCTL_OIDC_ENDPOINTS` | `endpoints` | Yes | | Talos node endpoints (comma-separated) |
@@ -377,8 +358,6 @@ The server can be configured via **YAML configuration file** or **environment va
 | `TALOSCTL_OIDC_RATE_LIMIT_WINDOW` | `rate_limit_window` | No | `1m` | Rate limit time window (e.g., `1m`, `5m`, `1h`) |
 | `TALOSCTL_OIDC_IP_ALLOWLIST` | `ip_allowlist` | No | | Comma-separated list of allowed IPs/CIDRs (empty = allow all) |
 | `DEBUG` | — | No | | Set to any value to enable detailed debug logging (includes RBAC rule evaluation) |
-
-\* *Either CA files, inline CA data, or talos_config is required*
 
 #### TLS Modes
 
@@ -484,131 +463,8 @@ Choose the deployment method that best fits your infrastructure:
 
 | Method | Best for | Complexity | Notes |
 |---|---|---|---|
-| [Talos extension](#deploying-as-a-talos-extension) | Single-cluster, no existing k8s infra | Low | Baked into the node, restarts with the node |
 | [Kubernetes Deployment](#deploying-on-kubernetes) | Multi-cluster, existing k8s platform | Medium | Needs external access from developer workstations |
 | [Standalone systemd](#deploying-as-a-standalone-systemd-service) | Air-gapped, dedicated infra, simplicity | Low | Manual updates, needs a Linux host |
-
----
-
-## Deploying as a Talos Extension
-
-Talos system extensions must be **baked into the installer image** — you cannot install them at runtime. This requires building a custom installer image using the Talos `imager`.
-
-### 1. Build a custom Talos installer with the extension (optional)
-
-Use the Talos `imager` container to produce an installer image that includes the extension. You need [`crane`](https://github.com/google/go-containerregistry/tree/main/cmd/crane) to push the result.
-
-```bash
-# Determine the digest of your extension image
-EXTENSION_REF=$(crane digest ghcr.io/qjoly/talosctl-oidc-talos-ext:v0.1.0)
-
-# Build the installer (adjust the Talos version to match your cluster)
-TALOS_VERSION=v1.12.4
-
-docker run --rm -t -v $PWD/_out:/out \
-  ghcr.io/siderolabs/imager:${TALOS_VERSION} installer \
-  --system-extension-image ghcr.io/qjoly/talosctl-oidc-talos-ext:v0.1.0@${EXTENSION_REF}
-```
-
-This produces `_out/metal-amd64-installer.tar`.
-
-Push it to your container registry:
-
-```bash
-crane push _out/metal-amd64-installer.tar ghcr.io/qjoly/talosctl-oidc-installer:${TALOS_VERSION}
-```
-
-### 2. Install or upgrade with the custom installer
-
-**For a new installation**, reference the custom installer in your machine config:
-
-```yaml
-machine:
-  install:
-    image: ghcr.io/qjoly/talosctl-oidc-installer:v0.1.0
-```
-
-**For an existing cluster**, upgrade nodes to the new installer:
-
-```bash
-talosctl upgrade --image ghcr.io/qjoly/talosctl-oidc-installer:v0.1.0
-```
-
-> You can also build an ISO for bare-metal boot by replacing `installer` with `iso` in the imager command.
-
-### 3. Configure the extension service
-
-The extension reads its configuration from an `ExtensionServiceConfig` document in the Talos machine config. The CA certificate and key are provided as config files, and all runtime settings are passed via environment variables.
-
-Add this to your machine config (or apply it via `talosctl apply-config`):
-
-```yaml
-apiVersion: v1alpha1
-kind: ExtensionServiceConfig
-name: talosctl-oidc
-configFiles:
-  - content: |
-      -----BEGIN CERTIFICATE-----
-      <your Talos API CA certificate>
-      -----END CERTIFICATE-----
-    mountPath: /config/ca.crt
-  - content: |
-      -----BEGIN ED25519 PRIVATE KEY-----
-      <your Talos API CA private key>
-      -----END ED25519 PRIVATE KEY-----
-    mountPath: /config/ca.key
-environment:
-  - TALOSCTL_OIDC_CA_CERT=/config/ca.crt
-  - TALOSCTL_OIDC_CA_KEY=/config/ca.key
-  - TALOSCTL_OIDC_ISSUER_URL=https://idp.example.com/application/o/talos-oidc/
-  - TALOSCTL_OIDC_CLIENT_ID=your-client-id
-  - TALOSCTL_OIDC_ENDPOINTS=10.0.0.1,10.0.0.2
-  - TALOSCTL_OIDC_CERT_TTL=5m
-  - TALOSCTL_OIDC_ROLES=os:admin
-  - TALOSCTL_OIDC_DATA_DIR=/var/lib/talosctl-oidc
-```
-
-The extension service mounts `/var/lib/talosctl-oidc` from the host (Talos EPHEMERAL partition) into the container. This directory persists the self-signed TLS certificate across restarts so the CA PEM stays stable and clients don't need to update their `--server-ca` file.
-
-If the data directory is not writable (e.g. the mount is missing), the server falls back to in-memory certificate generation and logs a warning.
-
-To use your own TLS certificates instead, mount them as config files and set `TALOSCTL_OIDC_TLS_CERT` and `TALOSCTL_OIDC_TLS_KEY`.
-
-See the [Environment Variables](#environment-variables) table for all available settings.
-
-#### Retrieving the self-signed CA after startup
-
-When `TALOSCTL_OIDC_DATA_DIR` is set (recommended), the CA PEM is written to `<DATA_DIR>/ca.crt` and is stable across restarts. You can retrieve it directly from the server:
-
-```bash
-# Fetch the CA PEM from the /ca endpoint (only available in self-signed mode)
-curl -k https://<talos-node-ip>:8443/ca > server-ca.pem
-```
-
-Or read it from the extension logs on first start:
-
-```bash
-talosctl logs ext-talosctl-oidc | grep -A 20 "BEGIN CERTIFICATE"
-```
-
-#### Network requirement
-
-The Talos node must be able to reach the OIDC provider over HTTPS (e.g. `https://idp.example.com`). The server fetches the provider's JWKS keys to validate tokens. If the node is on an isolated network, ensure the provider's hostname is resolvable and reachable from the node.
-
-### 5. Manage the extension service
-
-After the node boots (or upgrades) with the custom installer, the extension runs as `ext-talosctl-oidc`:
-
-```bash
-# Check service status
-talosctl service ext-talosctl-oidc
-
-# View logs
-talosctl logs ext-talosctl-oidc
-
-# Restart the service
-talosctl service ext-talosctl-oidc restart
-```
 
 ---
 
@@ -637,57 +493,49 @@ cd talosctl-oidc
 helm install talosctl-oidc charts/talosctl-oidc/ --namespace talos-system --create-namespace
 ```
 
-> The Helm chart deploys the **server image** (`ghcr.io/qjoly/talosctl-oidc-server`), which includes the system CA bundle at the standard `/etc/ssl/certs/ca-certificates.crt` path and the binary at `/talosctl-oidc`. This is distinct from the **extension image** (`ghcr.io/qjoly/talosctl-oidc-talos-ext`) used by the Talos imager, which has a different directory layout required by the Talos extension runtime.
+> The Helm chart deploys the **server image** (`ghcr.io/qjoly/talosctl-oidc-server`), which includes the system CA bundle at the standard `/etc/ssl/certs/ca-certificates.crt` path and the binary at `/talosctl-oidc`.
 
-### 2. Provide the Talos CA
+### 2. Enable Talos API access
 
-The server needs the Talos API CA certificate and private key to sign client certificates. There are two ways to supply them.
+The server issues certificates by calling the Talos API (`GenerateClientConfiguration`), so it **never holds the cluster CA private key**. The Talos node signs each certificate, and the roles the server can grant are bounded by its own credential (Talos rejects privilege escalation).
 
-#### Option A — Inline PEM (recommended for quick setup)
+#### Prerequisite: enable the feature on the nodes
 
-Extract the CA from your cluster with `talosctl`:
+In the Talos machine config of the control plane nodes:
 
-```bash
-talosctl get osrootsecrets -o yaml
-# Copy spec.issuingCA.crt and spec.issuingCA.key (base64-encoded PEM)
-# Decode them:
-echo "<base64-crt>" | base64 -d > talos-ca.crt
-echo "<base64-key>" | base64 -d > talos-ca.key
+```yaml
+machine:
+  features:
+    kubernetesTalosAPIAccess:
+      enabled: true
+      allowedRoles:
+        - os:admin
+      allowedKubernetesNamespaces:
+        - talos-system   # the release namespace
 ```
 
-Pass the decoded PEM files at install time via `--set-file`. The chart stores them in a Kubernetes Secret and injects them via environment variables — no file mount needed:
+#### Option A: Chart-managed credential (default)
+
+With `talos.apiAccess.enabled=true`, the chart creates a `serviceaccounts.talos.dev` resource. Talos provisions a short-lived talosconfig into a secret that the pod mounts, so no manual secret handling is needed.
 
 ```bash
 helm install talosctl-oidc charts/talosctl-oidc/ \
   --namespace talos-system --create-namespace \
-  --set-file talos.caCertData=talos-ca.crt \
-  --set-file talos.caKeyData=talos-ca.key \
+  --set talos.apiAccess.enabled=true \
+  --set "talos.apiAccess.roles={os:admin}" \
   --set config.issuerUrl=https://idp.example.com/application/o/talos-oidc/ \
   --set config.clientId=your-client-id \
   --set "config.endpoints={10.0.0.1,10.0.0.2}"
 ```
 
-> `--set-file` reads the file contents verbatim (preserving newlines). Do **not** use `--set` or `--set-string` for PEM data — those pass the value as a shell string and will strip the newlines that PEM requires, causing a "failed to decode CA certificate PEM" error at startup.
+#### Option B: Existing credential secret
 
-> Keep `talos-ca.key` safe. It is the private key that signs all client certificates. Do not commit it to source control.
-
-#### Option B — Existing Secret
-
-Create a Kubernetes Secret manually (e.g. via an external secrets operator), then point the chart at it:
-
-```bash
-kubectl create secret generic talosctl-oidc-ca \
-  --namespace talos-system \
-  --from-file=talos-ca.crt=talos-ca.crt \
-  --from-file=talos-ca.key=talos-ca.key
-```
+Provide a secret that already contains a talosconfig under the `config` key (e.g. one generated with `talosctl config new`), then point the chart at it:
 
 ```bash
 helm install talosctl-oidc charts/talosctl-oidc/ \
   --namespace talos-system --create-namespace \
-  --set talos.caSecretName=talosctl-oidc-ca \
-  --set "talos.caSecretKeys.cert=talos-ca.crt" \
-  --set "talos.caSecretKeys.key=talos-ca.key" \
+  --set talos.existingCredentialSecret=my-talosconfig \
   --set config.issuerUrl=https://idp.example.com/application/o/talos-oidc/ \
   --set config.clientId=your-client-id \
   --set "config.endpoints={10.0.0.1,10.0.0.2}"
@@ -705,11 +553,10 @@ helm install talosctl-oidc charts/talosctl-oidc/ \
 | `config.certTTL` | `5m` | Lifetime of issued client certificates |
 | `config.adminToken` | `""` | Bearer token to enable the admin API |
 | `config.auditLog` | `-` | Audit log destination (`-` for stdout) |
-| `talos.caCertData` | `""` | Inline Talos CA certificate PEM |
-| `talos.caKeyData` | `""` | Inline Talos CA private key PEM |
-| `talos.caSecretName` | `""` | Name of an existing Secret with the CA |
-| `talos.caSecretKeys.cert` | `talos-ca.crt` | Key name for the cert in the Secret |
-| `talos.caSecretKeys.key` | `talos-ca.key` | Key name for the key in the Secret |
+| `talos.apiAccess.enabled` | `true` | Create a `serviceaccounts.talos.dev` resource so Talos provisions the API credential |
+| `talos.apiAccess.roles` | `[os:admin]` | Roles for the server's own credential (bounds the certs it can issue) |
+| `talos.configMountPath` | `/var/run/secrets/talos.dev` | Mount path for the provisioned talosconfig |
+| `talos.existingCredentialSecret` | `""` | Use an existing talosconfig secret (`config` key) instead of creating the resource |
 | `service.type` | `ClusterIP` | Kubernetes Service type |
 | `ingress.enabled` | `false` | Enable Ingress |
 | `tolerations` | `[]` | Pod tolerations |
@@ -830,24 +677,27 @@ chown talosctl-oidc:talosctl-oidc /var/lib/talosctl-oidc /var/log/talosctl-oidc
 chmod 750 /var/lib/talosctl-oidc
 ```
 
-### 3. Copy the CA files
+### 3. Provide a Talos API credential
+
+The server authenticates to the Talos API with a talosconfig credential. From an admin machine that already has cluster access, generate a short-lived credential scoped to the roles the server should be able to grant:
 
 ```bash
-# Extract first (see Setup section above)
-cp talos-ca.crt /etc/talosctl-oidc/ca.crt
-cp talos-ca.key /etc/talosctl-oidc/ca.key
+# Generate a talosconfig for the server (adjust roles and TTL as needed)
+talosctl config new --roles os:admin --crt-ttl 8760h /tmp/server-talosconfig
 
-chown talosctl-oidc:talosctl-oidc /etc/talosctl-oidc/ca.crt /etc/talosctl-oidc/ca.key
-chmod 400 /etc/talosctl-oidc/ca.key
-chmod 444 /etc/talosctl-oidc/ca.crt
+# Copy it to the server host
+cp /tmp/server-talosconfig /etc/talosctl-oidc/talosconfig
+chown talosctl-oidc:talosctl-oidc /etc/talosctl-oidc/talosconfig
+chmod 400 /etc/talosctl-oidc/talosconfig
 ```
+
+> The roles in this credential bound what the server can issue. Talos rejects any request for roles beyond them.
 
 ### 4. Create the environment file
 
 ```bash
 cat > /etc/talosctl-oidc/env << 'EOF'
-TALOSCTL_OIDC_CA_CERT=/etc/talosctl-oidc/ca.crt
-TALOSCTL_OIDC_CA_KEY=/etc/talosctl-oidc/ca.key
+TALOSCTL_OIDC_TALOS_CONFIG=/etc/talosctl-oidc/talosconfig
 TALOSCTL_OIDC_ISSUER_URL=https://idp.example.com/application/o/talos-oidc/
 TALOSCTL_OIDC_CLIENT_ID=your-client-id
 TALOSCTL_OIDC_ENDPOINTS=10.0.0.1,10.0.0.2
@@ -861,7 +711,7 @@ chmod 600 /etc/talosctl-oidc/env
 chown talosctl-oidc:talosctl-oidc /etc/talosctl-oidc/env
 ```
 
-> The env file contains the CA key path and OIDC client settings. Restrict access with `chmod 600`.
+> The env file contains the talosconfig path and OIDC client settings. Restrict access with `chmod 600`.
 
 ### 5. Create the systemd unit
 
@@ -1307,7 +1157,7 @@ Dex passes group membership from upstream connectors in the `groups` claim as a 
 
 - **TLS by default**: The server generates a self-signed TLS certificate at startup when no TLS configuration is provided. Plain HTTP requires explicitly setting `TALOSCTL_OIDC_INSECURE=true`
 - **Ephemeral certificates**: Client certificates are short-lived (default 5 minutes). Users cannot extend or forge certificates without re-authenticating
-- **CA key isolation**: The Talos CA private key is held only by the server, never exposed to clients
+- **CA key isolation**: The Talos CA private key is never held by this server. Certificates are minted by the Talos node via the Talos API, so the CA key never leaves the nodes that already hold it
 - **PKCE is mandatory**: The OIDC flow uses S256 challenge method, protecting against authorization code interception
 - **OIDC tokens are stored in the system keychain**, encrypted at rest by the operating system
 - **Token validation**: The server validates ID tokens against the OIDC provider's JWKS (RS256, ES256, EdDSA) or HMAC secret (HS256)
@@ -1380,13 +1230,14 @@ The tool could not reach the OIDC provider's `/.well-known/openid-configuration`
 
 The state parameter returned by the OIDC provider does not match what was sent. This could indicate a stale browser tab. Try the login again.
 
-### Server: "loading CA" error
+### Server: "Talos API" error
 
-The CA certificate and key files could not be loaded. Verify:
+The server could not call the Talos API to issue a certificate. Verify:
 
-- The files are valid PEM-encoded Ed25519 certificates/keys
-- You are using the **Talos API CA** (from `machine.ca` in `controlplane.yaml`), not the OS-level CA from `secrets.yaml`
-- The cert and key match (same public key)
+- `TALOSCTL_OIDC_TALOS_CONFIG` points at a valid talosconfig, or the in-cluster credential is mounted at `/var/run/secrets/talos.dev/config`
+- The Talos nodes have `machine.features.kubernetesTalosAPIAccess` enabled, with the server's namespace in `allowedKubernetesNamespaces`
+- The roles the server requests are within the credential's `allowedRoles` (Talos rejects privilege escalation)
+- The configured `endpoints` are reachable from the server
 
 ### Keychain errors on Linux
 

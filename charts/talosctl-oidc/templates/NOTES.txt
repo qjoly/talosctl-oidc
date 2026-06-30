@@ -21,7 +21,16 @@
 {{- end }}
 
 IMPORTANT:
-This chart deploys talosctl-oidc.
-You must ensure that the Talos CA certificate and key are provided via 'talos.caSecretName' or 'talos.caCert'/'talos.caKey' values.
+This chart deploys talosctl-oidc, which issues certificates via the Talos API
+(it never holds the cluster CA).
+{{- if .Values.talos.apiAccess.enabled }}
+The Talos nodes must have machine.features.kubernetesTalosAPIAccess enabled, with
+this namespace ({{ .Release.Namespace }}) in allowedKubernetesNamespaces and roles
+{{ .Values.talos.apiAccess.roles }} in allowedRoles. Talos then provisions the
+credential into the '{{ include "talosctl-oidc.fullname" . }}-talos' secret.
+{{- else }}
+You must provide a Talos API credential via 'talos.existingCredentialSecret'
+(a secret containing a 'config' key), or set 'talos.apiAccess.enabled=true'.
+{{- end }}
 
 If you have enabled Ingress with TLS, the application is running in secure mode (HTTPS); TLS is handled by the Ingress Controller according to its configuration.

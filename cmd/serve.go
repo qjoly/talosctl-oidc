@@ -14,11 +14,11 @@ import (
 	"github.com/qjoly/talosctl-oidc/pkg/admin"
 	"github.com/qjoly/talosctl-oidc/pkg/allowlist"
 	"github.com/qjoly/talosctl-oidc/pkg/audit"
-	"github.com/qjoly/talosctl-oidc/pkg/certsign"
 	"github.com/qjoly/talosctl-oidc/pkg/config"
 	"github.com/qjoly/talosctl-oidc/pkg/ratelimit"
 	"github.com/qjoly/talosctl-oidc/pkg/rbac"
 	"github.com/qjoly/talosctl-oidc/pkg/server"
+	"github.com/qjoly/talosctl-oidc/pkg/talosapi"
 )
 
 var serveFlags struct {
@@ -46,8 +46,7 @@ Example configuration file:
   endpoints:
     - 10.0.0.1
     - 10.0.0.2
-  ca_cert: /path/to/ca.crt
-  ca_key: /path/to/ca.key
+  # talos_config: /var/run/secrets/talos.dev/config  # empty = in-cluster ServiceAccount
   listen: ":8443"
   cert_ttl: "1h"
   roles:
@@ -66,11 +65,7 @@ Example configuration file:
 Environment variables (override config file values):
 
   TALOSCTL_OIDC_CONFIG       Path to YAML configuration file (alternative to --config)
-  TALOSCTL_OIDC_CA_CERT      Path to Talos CA certificate file
-  TALOSCTL_OIDC_CA_KEY       Path to Talos CA private key file
-  TALOSCTL_OIDC_CA_CERT_DATA PEM-encoded Talos CA certificate, inline
-  TALOSCTL_OIDC_CA_KEY_DATA  PEM-encoded Talos CA private key, inline
-  TALOSCTL_OIDC_TALOS_CONFIG Path to a talosconfig YAML file
+  TALOSCTL_OIDC_TALOS_CONFIG Path to a talosconfig (Talos API client credential; empty = in-cluster ServiceAccount)
   TALOSCTL_OIDC_ISSUER_URL   OIDC issuer URL for token validation
   TALOSCTL_OIDC_CLIENT_ID    Expected OIDC client ID / audience
   TALOSCTL_OIDC_ENDPOINTS    Talos node endpoints, comma-separated
@@ -152,39 +147,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 		log.Printf("Configuration loaded from environment variables")
 	}
 
-	// Load the Talos CA.
-	// Priority order:
-	//   1. talos_config — talosconfig YAML file (e.g. from talos.dev ServiceAccount)
-	//   2. ca_cert_data / ca_key_data — inline PEM
-	//   3. ca_cert / ca_key — file paths
-	var ca *certsign.CA
-	var caErr error
+	// Build the certificate issuer. Signing is delegated to the Talos API
+	// (GenerateClientConfiguration) using a client credential — talos_config, or
+	// the in-cluster talos.dev ServiceAccount. The CA private key never reaches
+	// this server, and the roles it can grant are bounded by its own credential.
+	issuer := talosapi.NewIssuer(rc.TalosConfig, rc.Endpoints)
 	if rc.TalosConfig != "" {
-		ca, caErr = certsign.LoadCAFromTalosConfig(rc.TalosConfig)
-		if caErr != nil {
-			return fmt.Errorf("loading CA from talosconfig %s: %w", rc.TalosConfig, caErr)
-		}
-		log.Printf("Loaded Talos CA from talosconfig %s", rc.TalosConfig)
-	} else if rc.CACertData != "" && rc.CAKeyData != "" {
-		// DEPRECATED: Passing the CA private key via an environment variable
-		// (TALOSCTL_OIDC_CA_KEY_DATA) exposes it through /proc/<pid>/environ and
-		// shell history. Prefer supplying it as a file (ca_key / TALOSCTL_OIDC_CA_KEY)
-		// with permissions 0400 or 0600 (ISO 27001 A.10.1). This fallback will be
-		// removed in a future release.
-		log.Printf("WARNING: DEPRECATED: CA private key loaded from ca_key_data / TALOSCTL_OIDC_CA_KEY_DATA " +
-			"(environment variable). This exposes the key via /proc/<pid>/environ. " +
-			"Migrate to ca_key / TALOSCTL_OIDC_CA_KEY (a file path with permissions 0400 or 0600).")
-		ca, caErr = certsign.ParseCA([]byte(rc.CACertData), []byte(rc.CAKeyData))
-		if caErr != nil {
-			return fmt.Errorf("loading CA from inline data: %w", caErr)
-		}
-		log.Printf("Loaded Talos CA from inline data (ca_cert_data)")
+		log.Printf("Issuing via Talos API using talosconfig %s", rc.TalosConfig)
 	} else {
-		ca, caErr = certsign.LoadCA(rc.CACert, rc.CAKey)
-		if caErr != nil {
-			return fmt.Errorf("loading CA: %w", caErr)
-		}
-		log.Printf("Loaded Talos CA from %s", rc.CACert)
+		log.Printf("Issuing via Talos API using the in-cluster ServiceAccount credential")
 	}
 
 	// Initialize the audit logger.
@@ -248,7 +219,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	cfg := server.Config{
 		ListenAddr:   rc.Listen,
-		CA:           ca,
+		Issuer:       issuer,
 		CertTTL:      certTTL,
 		Roles:        rc.Roles,
 		IssuerURL:    rc.IssuerURL,
