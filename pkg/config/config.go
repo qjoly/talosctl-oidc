@@ -78,6 +78,11 @@ type FileConfig struct {
 	// IP allowlist configuration.
 	IPAllowlist []string `yaml:"ip_allowlist"` // List of allowed CIDRs/IPs (empty = allow all).
 
+	// Trusted reverse proxies. X-Forwarded-For is only honored when the direct
+	// peer is in this list; otherwise the header is attacker-controlled and
+	// ignored. Empty (default) = never trust X-Forwarded-For.
+	TrustedProxies []string `yaml:"trusted_proxies"`
+
 	// RBAC configuration.
 	RBAC RBACConfig `yaml:"rbac"` // RBAC rules for dynamic role mapping based on OIDC claims.
 }
@@ -103,6 +108,7 @@ type ResolvedConfig struct {
 	RateLimitRequests int
 	RateLimitWindow   time.Duration
 	IPAllowlist       []string
+	TrustedProxies    []string
 	RBAC              RBACConfig // RBAC rules for dynamic role mapping
 }
 
@@ -197,6 +203,13 @@ func Load(configPath string) (*ResolvedConfig, error) {
 		rc.IPAllowlist = strings.Split(envAllowlist, ",")
 	} else if len(fileCfg.IPAllowlist) > 0 {
 		rc.IPAllowlist = fileCfg.IPAllowlist
+	}
+
+	// Trusted proxies: env var (comma-separated) > file.
+	if envTrusted := os.Getenv("TALOSCTL_OIDC_TRUSTED_PROXIES"); envTrusted != "" {
+		rc.TrustedProxies = strings.Split(envTrusted, ",")
+	} else if len(fileCfg.TrustedProxies) > 0 {
+		rc.TrustedProxies = fileCfg.TrustedProxies
 	}
 
 	// RBAC: file config takes precedence for rules; env var can override the entire RBAC config.

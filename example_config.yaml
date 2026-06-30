@@ -20,6 +20,12 @@ ip_allowlist:
   - ::1
   - 127.0.0.1
 
+# Reverse proxies allowed to set X-Forwarded-For. When empty, the header is
+# never trusted and the direct connection address is used (spoofing-proof).
+# Set this to your ingress/proxy network so client IPs resolve correctly.
+trusted_proxies: []
+#   - 10.0.0.0/8
+
 # Network Configuration
 listen: ":8443"
 endpoints:

@@ -10,18 +10,26 @@ import (
 
 // Allowlist manages a list of allowed IP addresses and CIDR ranges.
 type Allowlist struct {
-	nets []net.IPNet
-	ips  []net.IP
+	nets    []net.IPNet
+	ips     []net.IP
+	trusted []net.IPNet // Trusted proxy networks; X-Forwarded-For is only honored from these.
 }
 
 // New creates a new allowlist from a list of CIDR strings or IP addresses.
 // If the list is empty, the allowlist allows all IPs (IsEnabled returns false).
-func New(allowed []string) (*Allowlist, error) {
-	if len(allowed) == 0 {
-		return &Allowlist{}, nil
-	}
-
+//
+// trustedProxies lists CIDRs/IPs of reverse proxies that are allowed to set
+// X-Forwarded-For. When empty, X-Forwarded-For is never trusted and the
+// direct connection address is used instead.
+func New(allowed, trustedProxies []string) (*Allowlist, error) {
 	a := &Allowlist{}
+
+	trusted, err := parseNets(trustedProxies)
+	if err != nil {
+		return nil, err
+	}
+	a.trusted = trusted
+
 	for _, s := range allowed {
 		s = strings.TrimSpace(s)
 		if s == "" {
@@ -46,6 +54,32 @@ func New(allowed []string) (*Allowlist, error) {
 	}
 
 	return a, nil
+}
+
+// parseNets parses a list of CIDRs or single IPs into networks. A bare IP is
+// treated as a host network (/32 or /128).
+func parseNets(entries []string) ([]net.IPNet, error) {
+	var nets []net.IPNet
+	for _, s := range entries {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ipnet, err := net.ParseCIDR(s); err == nil {
+			nets = append(nets, *ipnet)
+			continue
+		}
+		if ip := net.ParseIP(s); ip != nil {
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			nets = append(nets, net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			continue
+		}
+		return nil, &ParseError{Input: s}
+	}
+	return nets, nil
 }
 
 // ParseError represents an error parsing an allowlist entry.
@@ -96,25 +130,46 @@ func (a *Allowlist) Allowed(ip string) bool {
 	return false
 }
 
-// extractIP extracts the client IP from the request, handling X-Forwarded-For header.
-func extractIP(r *http.Request) string {
-	// Check X-Forwarded-For header first (for requests behind proxy).
-	forwarded := r.Header.Get("X-Forwarded-For")
-	if forwarded != "" {
-		// Take the first IP if multiple are present.
-		ips := strings.Split(forwarded, ",")
-		if len(ips) > 0 {
-			ip := strings.TrimSpace(ips[0])
-			return ip
+// extractIP returns the client IP for allowlist checks.
+//
+// X-Forwarded-For is attacker-controlled, so it is only honored when the
+// direct connection peer (RemoteAddr) is a configured trusted proxy. In that
+// case we walk the header right-to-left and return the first address that is
+// not itself a trusted proxy — the real client as seen by our proxy chain.
+// Otherwise the direct peer address is used, which cannot be spoofed.
+func (a *Allowlist) extractIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+
+	if a.isTrustedProxy(host) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			for i := len(parts) - 1; i >= 0; i-- {
+				ip := strings.TrimSpace(parts[i])
+				if !a.isTrustedProxy(ip) {
+					return ip
+				}
+			}
 		}
 	}
 
-	// Fall back to RemoteAddr.
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+	return host
+}
+
+// isTrustedProxy reports whether ip belongs to a configured trusted proxy network.
+func (a *Allowlist) isTrustedProxy(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
 	}
-	return ip
+	for _, n := range a.trusted {
+		if n.Contains(parsed) {
+			return true
+		}
+	}
+	return false
 }
 
 // Middleware returns an HTTP middleware that checks IP allowlisting.
@@ -126,7 +181,7 @@ func (a *Allowlist) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		ip := extractIP(r)
+		ip := a.extractIP(r)
 		if !a.Allowed(ip) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
