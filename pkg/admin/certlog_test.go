@@ -11,6 +11,8 @@ import (
 	"github.com/qjoly/talosctl-oidc/pkg/audit"
 )
 
+func ptrTime(t time.Time) *time.Time { return &t }
+
 func TestCertLog_PersistsOnlyCertIssued(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "certs.log")
 	logger, err := audit.NewLogger(filepath.Join(t.TempDir(), "audit.log"))
@@ -34,7 +36,7 @@ func TestCertLog_PersistsOnlyCertIssued(t *testing.T) {
 		ClientIP:        "10.0.0.2",
 		Roles:           []string{"os:reader"},
 		CertTTL:         "1h0m0s",
-		CertExpiry:      time.Unix(1000, 0).UTC(),
+		CertExpiry:      ptrTime(time.Unix(1000, 0).UTC()),
 		CertFingerprint: "abc123",
 	})
 

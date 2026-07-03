@@ -43,7 +43,7 @@ func (l *CertLog) handleEvent(event audit.Event) {
 		Subject:     event.Subject,
 		Email:       event.Email,
 		IssuedAt:    event.Timestamp,
-		ExpiresAt:   event.CertExpiry,
+		ExpiresAt:   derefTime(event.CertExpiry),
 		ClientIP:    event.ClientIP,
 		Roles:       event.Roles,
 		TTL:         event.CertTTL,
