@@ -12,6 +12,14 @@ import (
 	"github.com/qjoly/talosctl-oidc/pkg/audit"
 )
 
+// derefTime returns the zero Time when t is nil.
+func derefTime(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
 // FingerprintFromPEM extracts the SHA-256 fingerprint from a PEM-encoded certificate.
 func FingerprintFromPEM(certPEM []byte) (string, error) {
 	block, _ := pem.Decode(certPEM)
@@ -99,7 +107,7 @@ func (t *Tracker) handleEvent(event audit.Event) {
 			Subject:     event.Subject,
 			Email:       event.Email,
 			IssuedAt:    event.Timestamp,
-			ExpiresAt:   event.CertExpiry,
+			ExpiresAt:   derefTime(event.CertExpiry),
 			ClientIP:    event.ClientIP,
 			Roles:       event.Roles,
 			TTL:         event.CertTTL,

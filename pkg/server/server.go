@@ -658,7 +658,7 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		ClientIP:      clientIP,
 		Roles:         roles,
 		CertTTL:       s.cfg.CertTTL.String(),
-		CertExpiry:    certExpiry,
+		CertExpiry:    &certExpiry,
 		CertFingerprint: fingerprint,
 	})
 

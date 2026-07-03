@@ -419,7 +419,7 @@ talosctl-oidc login [flags]
 | `--client-id` | Yes | | OIDC client ID |
 | `--server` | Yes | | Cert exchange server URL (e.g. `https://localhost:8443`) |
 | `--client-secret` | No | | OIDC client secret (for confidential clients) |
-| `--scopes` | No | `openid,profile,email` | OIDC scopes |
+| `--scopes` | No | `openid,profile,email,offline_access` | OIDC scopes |
 | `--callback-port` | No | `8900` | Local callback server port |
 | `--context-name` | No | `oidc` | Name for the talosconfig context |
 | `--talosconfig` | No | `~/.talos/config` | Path to talosconfig file |

@@ -48,7 +48,7 @@ Example configuration file:
     - 10.0.0.2
   # talos_config: /var/run/secrets/talos.dev/config  # empty = in-cluster ServiceAccount
   listen: ":8443"
-  cert_ttl: "1h"
+  cert_ttl: "5m"
   roles:
     - os:admin
   tls_cert: /path/to/tls.crt
@@ -72,7 +72,7 @@ Environment variables (override config file values):
   TALOSCTL_OIDC_CLIENT_SECRET      OIDC client secret (for HS256-signed tokens)
   TALOSCTL_OIDC_CLIENT_SECRET_FILE  Path to file containing OIDC client secret (recommended over flag/env var)
   TALOSCTL_OIDC_LISTEN       Address to listen on (default: ":8443")
-  TALOSCTL_OIDC_CERT_TTL     Certificate lifetime (default: "1h")
+  TALOSCTL_OIDC_CERT_TTL     Certificate lifetime (default: "5m")
   TALOSCTL_OIDC_ROLES        Talos roles, comma-separated (default: "os:admin")
 
 TLS configuration:

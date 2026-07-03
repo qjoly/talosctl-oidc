@@ -198,7 +198,7 @@ func TestAdminDashboardWithActiveCerts(t *testing.T) {
 		ClientIP:   "192.168.1.1",
 		Roles:      []string{"os:admin"},
 		CertTTL:    "1h",
-		CertExpiry: time.Now().Add(time.Hour),
+		CertExpiry: func() *time.Time { t := time.Now().Add(time.Hour); return &t }(),
 		Timestamp:  time.Now(),
 	})
 

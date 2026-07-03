@@ -54,7 +54,8 @@ type Event struct {
 	CertTTL string `json:"cert_ttl,omitempty"`
 
 	// CertExpiry is when the issued certificate expires.
-	CertExpiry time.Time `json:"cert_expiry,omitempty"`
+	// Pointer so omitempty drops it on non-cert events (time.Time is never "empty").
+	CertExpiry *time.Time `json:"cert_expiry,omitempty"`
 
 	// CertFingerprint is the SHA-256 fingerprint of the issued certificate.
 	CertFingerprint string `json:"cert_fingerprint,omitempty"`
