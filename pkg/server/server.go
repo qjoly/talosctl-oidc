@@ -481,6 +481,10 @@ func isPathError(err error) bool {
 
 // handleHealth returns a 200 OK for health checks.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "ok")
 }
@@ -489,6 +493,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // This allows clients to fetch the CA and trust it without out-of-band transfer.
 // In non-self-signed modes, it returns 404.
 func (s *Server) handleCA(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	if len(s.selfSignedCAPEM) == 0 {
 		writeError(w, http.StatusNotFound, "CA endpoint only available in self-signed TLS mode")
 		return
