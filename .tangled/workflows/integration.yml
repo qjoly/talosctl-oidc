@@ -12,8 +12,8 @@ dependencies:
     - python3
     - curl
 
-# Un seul step : le moteur n'a pas d'equivalent a `if: always()`, le cleanup et
-# le dump de l'audit log passent donc par un trap.
+# Single step: the engine has no `if: always()`, so the cleanup and the audit
+# log dump go through a trap.
 steps:
   - name: integration
     command: |
@@ -45,7 +45,7 @@ steps:
       test -f test-env/talosconfig || { echo "mock did not start"; exit 1; }
 
       # ── Dex ───────────────────────────────────────────────────────────────
-      # bcrypt de "password" : htpasswd -bnBC 10 "" password | tr -d ':\n'
+      # bcrypt of "password": htpasswd -bnBC 10 "" password | tr -d ':\n'
       cat > test-env/dex/config.yaml << 'DEXEOF'
       issuer: http://127.0.0.1:5556/dex
       storage:
@@ -81,7 +81,7 @@ steps:
       done
       echo "==> Dex ready"
 
-      # ── Serveur talosctl-oidc ─────────────────────────────────────────────
+      # ── talosctl-oidc server ──────────────────────────────────────────────
       cat > test-env/server-config.yaml << SRVEOF
       issuer_url: http://127.0.0.1:5556/dex
       client_id: talosctl-oidc
@@ -106,7 +106,7 @@ steps:
       done
       echo "==> Server ready"
 
-      # ── Flux OIDC complet (PKCE) + echange de certificat ──────────────────
+      # ── Full OIDC flow (PKCE) + certificate exchange ──────────────────────
       cat > test-env/flow.py << 'PYEOF'
       import base64, hashlib, html, http.cookiejar, json, re, secrets
       import urllib.error, urllib.parse, urllib.request
@@ -127,7 +127,7 @@ steps:
               self.url = url
 
 
-      # Rien n'ecoute sur le port de callback : on intercepte la redirection finale.
+      # Nothing listens on the callback port, so catch the final redirect.
       class StopAtCallback(urllib.request.HTTPRedirectHandler):
           def redirect_request(self, req, fp, code, msg, headers, newurl):
               if newurl.startswith(REDIRECT_URI):
@@ -206,7 +206,7 @@ steps:
 
       python3 test-env/flow.py
 
-      # ── Validation du certificat ──────────────────────────────────────────
+      # ── Certificate validation ────────────────────────────────────────────
       openssl x509 -in test-env/client-cert.pem -noout -text > /dev/null
       echo "==> Certificate is valid X.509"
 
