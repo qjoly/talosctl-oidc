@@ -9,7 +9,7 @@ on:
 permissions:
   contents: read
 env:
-  TANGLED_REMOTE: une-tasse-de.cafe@tangled.org:une-tasse-de.cafe/talosctl-oidc
+  TANGLED_REMOTE: une-tasse-de.cafe@tangled.org:did:plc:vgwym53jrsibftgrvi2o44cz
 jobs:
   mirror:
     runs-on: ubuntu-latest
