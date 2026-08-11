@@ -1,0 +1,223 @@
+when:
+  - event: ["push", "pull_request"]
+    branch: main
+
+engine: nixery
+
+dependencies:
+  nixpkgs:
+    - go_1_26
+    - dex-oidc
+    - openssl
+    - python3
+    - curl
+
+# Un seul step : le moteur n'a pas d'equivalent a `if: always()`, le cleanup et
+# le dump de l'audit log passent donc par un trap.
+steps:
+  - name: integration
+    command: |
+      set -euo pipefail
+
+      cleanup() {
+        rc=$?
+        echo "==> Audit log:"
+        cat test-env/audit.log 2>/dev/null || echo "(none)"
+        if [ "$rc" -ne 0 ]; then
+          echo "==> Dex log:"; tail -50 test-env/dex.log 2>/dev/null || true
+          echo "==> Server log:"; tail -50 test-env/server.log 2>/dev/null || true
+          echo "==> Mock log:"; tail -50 test-env/mock.log 2>/dev/null || true
+        fi
+        kill $(cat test-env/*.pid 2>/dev/null) 2>/dev/null || true
+      }
+      trap cleanup EXIT
+
+      mkdir -p test-env/dex test-env/server-data
+
+      go build -o talosctl-oidc .
+      go build -o test-env/mock-talos-api ./hack/mock-talos-api
+
+      # ── Mock Talos API ────────────────────────────────────────────────────
+      test-env/mock-talos-api -talosconfig test-env/talosconfig -listen 127.0.0.1:50000 \
+        > test-env/mock.log 2>&1 &
+      echo $! > test-env/mock.pid
+      for i in $(seq 1 30); do [ -f test-env/talosconfig ] && break; sleep 1; done
+      test -f test-env/talosconfig || { echo "mock did not start"; exit 1; }
+
+      # ── Dex ───────────────────────────────────────────────────────────────
+      # bcrypt de "password" : htpasswd -bnBC 10 "" password | tr -d ':\n'
+      cat > test-env/dex/config.yaml << 'DEXEOF'
+      issuer: http://127.0.0.1:5556/dex
+      storage:
+        type: memory
+      web:
+        http: 127.0.0.1:5556
+      logger:
+        level: info
+      oauth2:
+        skipApprovalScreen: true
+        responseTypes:
+          - code
+      staticClients:
+        - id: talosctl-oidc
+          name: talosctl-oidc
+          public: true
+          redirectURIs:
+            - http://127.0.0.1:8900/callback
+      enablePasswordDB: true
+      staticPasswords:
+        - email: "admin@example.com"
+          hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+          username: "admin"
+          userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
+      DEXEOF
+
+      dex serve test-env/dex/config.yaml > test-env/dex.log 2>&1 &
+      echo $! > test-env/dex.pid
+      for i in $(seq 1 60); do
+        curl -sf http://127.0.0.1:5556/dex/.well-known/openid-configuration >/dev/null && break
+        [ "$i" -eq 60 ] && { echo "Dex did not become healthy"; exit 1; }
+        sleep 1
+      done
+      echo "==> Dex ready"
+
+      # ── Serveur talosctl-oidc ─────────────────────────────────────────────
+      cat > test-env/server-config.yaml << SRVEOF
+      issuer_url: http://127.0.0.1:5556/dex
+      client_id: talosctl-oidc
+      talos_config: $(pwd)/test-env/talosconfig
+      listen: ":8080"
+      endpoints:
+        - 127.0.0.1:50000
+      cert_ttl: "5m"
+      roles:
+        - os:admin
+      insecure: true
+      data_dir: $(pwd)/test-env/server-data
+      audit_log: $(pwd)/test-env/audit.log
+      SRVEOF
+
+      ./talosctl-oidc serve --config test-env/server-config.yaml > test-env/server.log 2>&1 &
+      echo $! > test-env/server.pid
+      for i in $(seq 1 30); do
+        curl -sf http://127.0.0.1:8080/healthz >/dev/null && break
+        [ "$i" -eq 30 ] && { echo "Server did not become healthy"; exit 1; }
+        sleep 1
+      done
+      echo "==> Server ready"
+
+      # ── Flux OIDC complet (PKCE) + echange de certificat ──────────────────
+      cat > test-env/flow.py << 'PYEOF'
+      import base64, hashlib, html, http.cookiejar, json, re, secrets
+      import urllib.error, urllib.parse, urllib.request
+
+      DEX = "http://127.0.0.1:5556/dex"
+      SERVER = "http://127.0.0.1:8080"
+      CLIENT_ID = "talosctl-oidc"
+      REDIRECT_URI = "http://127.0.0.1:8900/callback"
+
+      verifier = secrets.token_urlsafe(64)[:43]
+      challenge = base64.urlsafe_b64encode(
+          hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+      state = secrets.token_hex(16)
+
+
+      class Callback(Exception):
+          def __init__(self, url):
+              self.url = url
+
+
+      # Rien n'ecoute sur le port de callback : on intercepte la redirection finale.
+      class StopAtCallback(urllib.request.HTTPRedirectHandler):
+          def redirect_request(self, req, fp, code, msg, headers, newurl):
+              if newurl.startswith(REDIRECT_URI):
+                  raise Callback(newurl)
+              return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+      opener = urllib.request.build_opener(
+          StopAtCallback,
+          urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+      print("==> Authorization request")
+      auth_url = DEX + "/auth?" + urllib.parse.urlencode({
+          "response_type": "code",
+          "client_id": CLIENT_ID,
+          "redirect_uri": REDIRECT_URI,
+          "scope": "openid profile email offline_access",
+          "state": state,
+          "code_challenge": challenge,
+          "code_challenge_method": "S256",
+      })
+      resp = opener.open(auth_url)
+      page, login_page_url = resp.read().decode(), resp.geturl()
+
+      m = re.search(r'action="([^"]+)"', page)
+      if not m:
+          raise SystemExit("no form action on Dex login page:\n" + page[:2000])
+      login_url = urllib.parse.urljoin(login_page_url, html.unescape(m.group(1)))
+
+      print("==> Submitting credentials")
+      creds = urllib.parse.urlencode(
+          {"login": "admin@example.com", "password": "password"}).encode()
+      try:
+          body = opener.open(login_url, creds).read().decode()
+          raise SystemExit("login did not reach the callback:\n" + body[:2000])
+      except Callback as cb:
+          query = urllib.parse.parse_qs(urllib.parse.urlparse(cb.url).query)
+
+      if query.get("state", [None])[0] != state:
+          raise SystemExit("state mismatch: %r" % query.get("state"))
+      code = query["code"][0]
+      print("==> Got authorization code (state verified)")
+
+      print("==> Exchanging code for tokens")
+      tokens = json.loads(opener.open(DEX + "/token", urllib.parse.urlencode({
+          "grant_type": "authorization_code",
+          "code": code,
+          "redirect_uri": REDIRECT_URI,
+          "client_id": CLIENT_ID,
+          "code_verifier": verifier,
+      }).encode()).read())
+      id_token = tokens.get("id_token")
+      if not id_token:
+          raise SystemExit("no id_token in token response: %r" % tokens)
+      print("==> Got ID token (%d chars)" % len(id_token))
+
+      print("==> Exchanging ID token for a certificate")
+      req = urllib.request.Request(
+          SERVER + "/exchange",
+          data=json.dumps({"id_token": id_token}).encode(),
+          headers={"Content-Type": "application/json"})
+      try:
+          out = json.loads(opener.open(req).read())
+      except urllib.error.HTTPError as e:
+          raise SystemExit("exchange failed: HTTP %d %s" % (e.code, e.read().decode()))
+
+      missing = [f for f in ("ca", "cert", "key", "endpoints", "ttl_seconds") if not out.get(f)]
+      if missing:
+          raise SystemExit("missing or empty fields: %s" % missing)
+      print("==> All expected fields present")
+
+      open("test-env/client-cert.pem", "w").write(out["cert"])
+      open("test-env/issuing-ca.pem", "w").write(out["ca"])
+      print("==> TTL: %ss, endpoints: %s" % (out["ttl_seconds"], out["endpoints"]))
+      PYEOF
+
+      python3 test-env/flow.py
+
+      # ── Validation du certificat ──────────────────────────────────────────
+      openssl x509 -in test-env/client-cert.pem -noout -text > /dev/null
+      echo "==> Certificate is valid X.509"
+
+      openssl verify -CAfile test-env/issuing-ca.pem test-env/client-cert.pem > /dev/null
+      echo "==> Certificate signed by the Talos-issued CA"
+
+      SUBJECT=$(openssl x509 -in test-env/client-cert.pem -noout -subject)
+      echo "==> Subject: ${SUBJECT}"
+      case "$SUBJECT" in
+        *"O = os:admin"*|*"O=os:admin"*) ;;
+        *) echo "ERROR: expected organization os:admin"; exit 1 ;;
+      esac
+
+      echo "=== Integration test PASSED ==="
