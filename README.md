@@ -1221,6 +1221,12 @@ DEBUG=1 talosctl-oidc serve
 
 Debug logs include information about OIDC discovery, PKCE challenges, token response fields, keychain/file storage operations, and certificate expiry calculations.
 
+### Local test environment
+
+`./test.sh` starts Dex (in Docker or Podman) and the exchange server so you can run `talosctl-oidc login` by hand against a real Talos cluster. Set `TALOSCONFIG` to a valid credential first.
+
+The non-interactive counterpart runs in CI (`.tangled/workflows/integration.yml`): it replays the whole OIDC flow against a mock Talos API, without the CLI.
+
 ## Troubleshooting
 
 ### "invalid_client" error during login
