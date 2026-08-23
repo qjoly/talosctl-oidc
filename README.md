@@ -443,6 +443,8 @@ talosctl-oidc login [flags]
 | `--server-ca` | No | | Path to PEM CA certificate to trust for the server (for self-signed TLS) |
 | `--insecure` | No | `false` | Allow plain HTTP connection to the server |
 | `--watch` | No | `false` | Run in the background and keep the Talos certificate fresh |
+| `--skip-open-browser` | No | `false` | Only print the authorization URL instead of opening a browser |
+| `--browser-command` | No | | Command used to open the authorization URL, instead of the platform default |
 
 ### `logout`
 
@@ -1252,6 +1254,14 @@ The OIDC provider is rejecting the token request. Common causes:
 
 - The provider is configured as a **confidential client** but no `--client-secret` was provided. Either switch to a public client or pass `--client-secret`
 - The **Client ID** is incorrect
+
+### "failed to open browser: exec: \"xdg-open\": executable file not found in $PATH"
+
+The host has no browser opener, which is the usual case over SSH. Use
+`--skip-open-browser` to just print the authorization URL, or `--browser-command`
+to name the binary to run. Remember the callback still has to be reachable from
+wherever you open the URL, so pair it with an SSH port forward or with
+`--listen-address`.
 
 ### "failed to listen on 127.0.0.1:8900"
 

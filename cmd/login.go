@@ -43,6 +43,9 @@ var loginFlags struct {
 	serverCA     string
 	insecure     bool
 	watch        bool
+
+	skipOpenBrowser bool
+	browserCommand  string
 }
 
 var loginCmd = &cobra.Command{
@@ -70,6 +73,8 @@ func init() {
 	loginCmd.Flags().StringVar(&loginFlags.serverCA, "server-ca", "", "Path to PEM CA certificate to trust for the cert exchange server (for self-signed TLS)")
 	loginCmd.Flags().BoolVar(&loginFlags.insecure, "insecure", false, "Allow plain HTTP connection to the cert exchange server (skip TLS verification)")
 	loginCmd.Flags().BoolVar(&loginFlags.watch, "watch", false, "Run in the background and keep the Talos certificate fresh")
+	loginCmd.Flags().BoolVar(&loginFlags.skipOpenBrowser, "skip-open-browser", false, "Only print the authorization URL instead of opening a browser (headless hosts)")
+	loginCmd.Flags().StringVar(&loginFlags.browserCommand, "browser-command", "", "Command used to open the authorization URL, instead of the platform default (e.g. google-chrome)")
 
 	loginCmd.MarkFlagRequired("provider")
 	loginCmd.MarkFlagRequired("client-id")
@@ -414,20 +419,38 @@ func exchangeTokenForCert(ctx context.Context, client *http.Client, serverURL, i
 }
 
 func openBrowser(url string) error {
+	if loginFlags.skipOpenBrowser {
+		fmt.Printf("Open this URL to authenticate:\n  %s\n\n", url)
+		return nil
+	}
+
 	fmt.Printf("Opening browser for authentication...\n")
 	fmt.Printf("If the browser does not open, visit:\n  %s\n\n", url)
 
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "linux":
-		cmd = exec.Command("xdg-open", url)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	default:
-		return fmt.Errorf("unsupported platform %s", runtime.GOOS)
+	cmd, err := browserCommand(url)
+	if err != nil {
+		return err
 	}
 
 	return cmd.Start()
+}
+
+// browserCommand builds the command that opens url, honouring --browser-command.
+// The URL is passed as a single argument, so no shell quoting is involved; wrap
+// anything more elaborate in a script.
+func browserCommand(url string) (*exec.Cmd, error) {
+	if loginFlags.browserCommand != "" {
+		return exec.Command(loginFlags.browserCommand, url), nil
+	}
+
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", url), nil
+	case "linux":
+		return exec.Command("xdg-open", url), nil
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url), nil
+	default:
+		return nil, fmt.Errorf("unsupported platform %s, use --browser-command or --skip-open-browser", runtime.GOOS)
+	}
 }
