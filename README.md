@@ -316,6 +316,28 @@ talosctl-oidc login \
 The first `--listen-address` is the one sent as redirect URI, so it is the one
 to register in your OIDC client.
 
+On a host where no loopback callback is practical at all, `--device-code` uses
+the OAuth device authorization grant (RFC 8628) instead: no browser, no local
+listener, just a URL and a code to enter from another machine.
+
+```bash
+talosctl-oidc login \
+  --provider https://idp.example.com/application/o/talos-oidc/ \
+  --client-id <your-client-id> \
+  --server https://localhost:8443 \
+  --device-code
+```
+
+```
+Open https://idp.example.com/device on any device and enter the code: WDJB-MJHT
+
+Waiting for the login to be approved...
+```
+
+Your OIDC client must have the device flow enabled (in Keycloak, the
+`oauth2DeviceAuthorizationGrantEnabled` toggle) and the provider must advertise
+`device_authorization_endpoint` in its discovery document.
+
 This will:
 
 1. Open your browser to the OIDC provider login page
@@ -445,6 +467,7 @@ talosctl-oidc login [flags]
 | `--watch` | No | `false` | Run in the background and keep the Talos certificate fresh |
 | `--skip-open-browser` | No | `false` | Only print the authorization URL instead of opening a browser |
 | `--browser-command` | No | | Command used to open the authorization URL, instead of the platform default |
+| `--device-code` | No | `false` | Use the OAuth device authorization grant (RFC 8628) instead of the browser callback |
 
 ### `logout`
 
@@ -1257,11 +1280,12 @@ The OIDC provider is rejecting the token request. Common causes:
 
 ### "failed to open browser: exec: \"xdg-open\": executable file not found in $PATH"
 
-The host has no browser opener, which is the usual case over SSH. Use
-`--skip-open-browser` to just print the authorization URL, or `--browser-command`
-to name the binary to run. Remember the callback still has to be reachable from
-wherever you open the URL, so pair it with an SSH port forward or with
-`--listen-address`.
+This is now only a warning: the authorization URL has already been printed and
+the callback server is listening, so the login carries on. Use
+`--skip-open-browser` to silence the attempt entirely, or `--browser-command` to
+name the binary to run. The callback still has to be reachable from wherever you
+open the URL, so pair it with an SSH port forward or with `--listen-address` —
+or use `--device-code`, which needs no local listener at all.
 
 ### "failed to listen on 127.0.0.1:8900"
 
