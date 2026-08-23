@@ -23,6 +23,29 @@ var oidcHTTPClient = &http.Client{
 	},
 }
 
+// postForm sends a form-encoded POST to endpoint and returns the status and body.
+func postForm(ctx context.Context, endpoint string, data url.Values) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return 0, nil, fmt.Errorf("creating request for %s: %w", endpoint, err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := oidcHTTPClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	resp.Body = http.MaxBytesReader(nil, resp.Body, 1<<20) // 1 MB limit
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("reading response from %s: %w", endpoint, err)
+	}
+
+	return resp.StatusCode, body, nil
+}
+
 // ProviderConfig holds the OIDC provider discovery information.
 type ProviderConfig struct {
 	Issuer                string `json:"issuer"`
@@ -30,6 +53,8 @@ type ProviderConfig struct {
 	TokenEndpoint         string `json:"token_endpoint"`
 	UserinfoEndpoint      string `json:"userinfo_endpoint"`
 	JWKSURI               string `json:"jwks_uri"`
+
+	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint"`
 }
 
 // Discover fetches OIDC provider metadata from the well-known endpoint.
@@ -158,30 +183,17 @@ func ExchangeCode(ctx context.Context, provider *ProviderConfig, clientID, clien
 		data.Set("client_secret", clientSecret)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.TokenEndpoint, strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("creating token request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := oidcHTTPClient.Do(req)
+	status, body, err := postForm(ctx, provider.TokenEndpoint, data)
 	if err != nil {
 		return nil, fmt.Errorf("exchanging authorization code: %w", err)
 	}
-	defer resp.Body.Close()
-	resp.Body = http.MaxBytesReader(nil, resp.Body, 1<<20) // 1 MB limit
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		debug("Token exchange failed: status=%d, body=%s", resp.StatusCode, string(body))
-		return nil, fmt.Errorf("token endpoint returned status %d: %s", resp.StatusCode, string(body))
+	if status != http.StatusOK {
+		debug("Token exchange failed: status=%d, body=%s", status, string(body))
+		return nil, fmt.Errorf("token endpoint returned status %d: %s", status, string(body))
 	}
 
 	var tokenResp TokenResponse
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading token response: %w", err)
-	}
 	debug("Raw token response: %s", string(body))
 
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
@@ -212,30 +224,17 @@ func RefreshAccessToken(ctx context.Context, provider *ProviderConfig, clientID,
 		data.Set("client_secret", clientSecret)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.TokenEndpoint, strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("creating refresh request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := oidcHTTPClient.Do(req)
+	status, body, err := postForm(ctx, provider.TokenEndpoint, data)
 	if err != nil {
 		return nil, fmt.Errorf("refreshing token: %w", err)
 	}
-	defer resp.Body.Close()
-	resp.Body = http.MaxBytesReader(nil, resp.Body, 1<<20) // 1 MB limit
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		debug("Token refresh failed: status=%d, body=%s", resp.StatusCode, string(body))
-		return nil, fmt.Errorf("token refresh returned status %d: %s", resp.StatusCode, string(body))
+	if status != http.StatusOK {
+		debug("Token refresh failed: status=%d, body=%s", status, string(body))
+		return nil, fmt.Errorf("token refresh returned status %d: %s", status, string(body))
 	}
 
 	var tokenResp TokenResponse
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading refresh response: %w", err)
-	}
 	debug("Raw refresh response: %s", string(body))
 
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
@@ -245,4 +244,123 @@ func RefreshAccessToken(ctx context.Context, provider *ProviderConfig, clientID,
 		tokenResp.AccessToken != "", tokenResp.RefreshToken != "", tokenResp.IDToken != "", tokenResp.ExpiresIn, tokenResp.Scope)
 
 	return &tokenResp, nil
+}
+
+// deviceCodeGrantType is the grant_type of RFC 8628.
+const deviceCodeGrantType = "urn:ietf:params:oauth:grant-type:device_code"
+
+// DeviceAuth is the device authorization response (RFC 8628 section 3.2).
+type DeviceAuth struct {
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int    `json:"expires_in"`
+	Interval                int    `json:"interval"`
+}
+
+// RequestDeviceCode starts a device authorization grant.
+func RequestDeviceCode(ctx context.Context, provider *ProviderConfig, clientID, clientSecret string, scopes []string) (*DeviceAuth, error) {
+	if provider.DeviceAuthorizationEndpoint == "" {
+		return nil, fmt.Errorf("the OIDC provider does not advertise a device_authorization_endpoint; enable the device flow for this client")
+	}
+	debug("Requesting device code at %s for client_id=%s", provider.DeviceAuthorizationEndpoint, clientID)
+
+	data := url.Values{"client_id": {clientID}}
+	if len(scopes) > 0 {
+		data.Set("scope", strings.Join(scopes, " "))
+	}
+	if clientSecret != "" {
+		data.Set("client_secret", clientSecret)
+	}
+
+	status, body, err := postForm(ctx, provider.DeviceAuthorizationEndpoint, data)
+	if err != nil {
+		return nil, fmt.Errorf("requesting device code: %w", err)
+	}
+
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("device authorization endpoint returned status %d: %s", status, string(body))
+	}
+
+	var auth DeviceAuth
+	if err := json.Unmarshal(body, &auth); err != nil {
+		return nil, fmt.Errorf("decoding device authorization response: %w", err)
+	}
+	if auth.DeviceCode == "" || auth.UserCode == "" {
+		return nil, fmt.Errorf("device authorization response is missing device_code or user_code")
+	}
+
+	// Defaults from RFC 8628 section 3.2 when the provider stays silent.
+	if auth.Interval <= 0 {
+		auth.Interval = 5
+	}
+	if auth.ExpiresIn <= 0 {
+		auth.ExpiresIn = 600
+	}
+	debug("Device code obtained: user_code=%s, interval=%ds, expires_in=%ds", auth.UserCode, auth.Interval, auth.ExpiresIn)
+
+	return &auth, nil
+}
+
+// PollDeviceToken polls the token endpoint until the user approves the request,
+// the device code expires, or ctx is cancelled.
+func PollDeviceToken(ctx context.Context, provider *ProviderConfig, clientID, clientSecret string, auth *DeviceAuth) (*TokenResponse, error) {
+	data := url.Values{
+		"grant_type":  {deviceCodeGrantType},
+		"device_code": {auth.DeviceCode},
+		"client_id":   {clientID},
+	}
+	if clientSecret != "" {
+		data.Set("client_secret", clientSecret)
+	}
+
+	interval := time.Duration(auth.Interval) * time.Second
+	deadline := time.Now().Add(time.Duration(auth.ExpiresIn) * time.Second)
+
+	for {
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("device code expired before the login was approved")
+		}
+
+		status, body, err := postForm(ctx, provider.TokenEndpoint, data)
+		if err != nil {
+			return nil, fmt.Errorf("polling for the device token: %w", err)
+		}
+
+		if status == http.StatusOK {
+			var tokenResp TokenResponse
+			if err := json.Unmarshal(body, &tokenResp); err != nil {
+				return nil, fmt.Errorf("decoding device token response: %w", err)
+			}
+			debug("Device token response: access_token=%v, refresh_token=%v, id_token=%v",
+				tokenResp.AccessToken != "", tokenResp.RefreshToken != "", tokenResp.IDToken != "")
+			return &tokenResp, nil
+		}
+
+		var errResp struct {
+			Error       string `json:"error"`
+			Description string `json:"error_description"`
+		}
+		if json.Unmarshal(body, &errResp) != nil || errResp.Error == "" {
+			return nil, fmt.Errorf("token endpoint returned status %d: %s", status, string(body))
+		}
+
+		switch errResp.Error {
+		case "authorization_pending":
+			debug("Device authorization still pending")
+		case "slow_down":
+			// RFC 8628 section 3.5: bump the interval by 5s and keep going.
+			interval += 5 * time.Second
+			debug("Provider asked to slow down, polling every %s", interval)
+		default:
+			return nil, fmt.Errorf("device authorization failed: %s: %s", errResp.Error, errResp.Description)
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(interval):
+		}
+	}
 }

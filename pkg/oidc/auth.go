@@ -295,17 +295,16 @@ func Authenticate(ctx context.Context, cfg AuthConfig) (*StoredToken, error) {
 	debug("Using redirect URI: %s", redirectURI)
 
 	// Build the authorization URL.
-	scopes := cfg.Scopes
-	if len(scopes) == 0 {
-		scopes = []string{"openid", "profile", "email", "offline_access"}
-	}
+	scopes := cfg.scopesOrDefault()
 	authURL := BuildAuthorizationURL(provider, cfg.ClientID, redirectURI, scopes, state, pkce)
 	debug("Full authorization URL: %s", authURL)
 
-	// Open browser.
+	// Open browser. The URL has already been printed at this point and the
+	// callback server is listening, so a failure here is not fatal: the user can
+	// still open it by hand.
 	if cfg.OpenBrowser != nil {
 		if err := cfg.OpenBrowser(authURL); err != nil {
-			return nil, fmt.Errorf("failed to open browser: %w", err)
+			fmt.Fprintf(os.Stderr, "Warning: could not open a browser (%v). Open the URL above manually.\n", err)
 		}
 	}
 
@@ -333,11 +332,48 @@ func Authenticate(ctx context.Context, cfg AuthConfig) (*StoredToken, error) {
 	debug("Token exchange successful (received: access_token=%v, refresh_token=%v, id_token=%v)",
 		tokenResp.AccessToken != "", tokenResp.RefreshToken != "", tokenResp.IDToken != "")
 
-	// Build stored token.
+	return newStoredToken(tokenResp, cfg), nil
+}
+
+// AuthenticateDevice performs the OAuth 2.0 device authorization grant (RFC 8628):
+// it prints a URL and a user code to enter on another device, then polls the token
+// endpoint until the login is approved. No browser and no callback server involved.
+func AuthenticateDevice(ctx context.Context, cfg AuthConfig) (*StoredToken, error) {
+	debug("Starting device authorization flow for issuer: %s", cfg.IssuerURL)
+
+	provider, err := Discover(ctx, cfg.IssuerURL)
+	if err != nil {
+		return nil, fmt.Errorf("OIDC discovery failed: %w", err)
+	}
+
+	auth, err := RequestDeviceCode(ctx, provider, cfg.ClientID, cfg.ClientSecret, cfg.scopesOrDefault())
+	if err != nil {
+		return nil, err
+	}
+
+	if auth.VerificationURIComplete != "" {
+		fmt.Printf("Open this URL on any device to authenticate:\n  %s\n\n", auth.VerificationURIComplete)
+		fmt.Printf("If it asks for a code, enter: %s\n\n", auth.UserCode)
+	} else {
+		fmt.Printf("Open %s on any device and enter the code: %s\n\n", auth.VerificationURI, auth.UserCode)
+	}
+	fmt.Println("Waiting for the login to be approved...")
+
+	tokenResp, err := PollDeviceToken(ctx, provider, cfg.ClientID, cfg.ClientSecret, auth)
+	if err != nil {
+		return nil, fmt.Errorf("device authentication failed: %w", err)
+	}
+
+	return newStoredToken(tokenResp, cfg), nil
+}
+
+// newStoredToken turns a token endpoint response into what we persist.
+func newStoredToken(tokenResp *TokenResponse, cfg AuthConfig) *StoredToken {
 	expiresIn := tokenResp.ExpiresIn
 	if expiresIn == 0 {
 		expiresIn = 3600 // Default to 1 hour if not provided.
 	}
+
 	storedToken := &StoredToken{
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
@@ -348,7 +384,7 @@ func Authenticate(ctx context.Context, cfg AuthConfig) (*StoredToken, error) {
 	}
 	debug("Token built and expires at: %s", storedToken.ExpiresAt)
 
-	return storedToken, nil
+	return storedToken
 }
 
 // AuthConfig holds configuration for the OIDC authentication flow.
@@ -361,4 +397,11 @@ type AuthConfig struct {
 	// first one is used as the redirect URI.
 	ListenAddresses []string
 	OpenBrowser     func(url string) error
+}
+
+func (cfg AuthConfig) scopesOrDefault() []string {
+	if len(cfg.Scopes) == 0 {
+		return []string{"openid", "profile", "email", "offline_access"}
+	}
+	return cfg.Scopes
 }

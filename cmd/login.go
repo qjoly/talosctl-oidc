@@ -46,6 +46,7 @@ var loginFlags struct {
 
 	skipOpenBrowser bool
 	browserCommand  string
+	deviceCode      bool
 }
 
 var loginCmd = &cobra.Command{
@@ -75,6 +76,7 @@ func init() {
 	loginCmd.Flags().BoolVar(&loginFlags.watch, "watch", false, "Run in the background and keep the Talos certificate fresh")
 	loginCmd.Flags().BoolVar(&loginFlags.skipOpenBrowser, "skip-open-browser", false, "Only print the authorization URL instead of opening a browser (headless hosts)")
 	loginCmd.Flags().StringVar(&loginFlags.browserCommand, "browser-command", "", "Command used to open the authorization URL, instead of the platform default (e.g. google-chrome)")
+	loginCmd.Flags().BoolVar(&loginFlags.deviceCode, "device-code", false, "Use the OAuth device authorization grant (RFC 8628) instead of the browser callback; needs no local listener")
 
 	loginCmd.MarkFlagRequired("provider")
 	loginCmd.MarkFlagRequired("client-id")
@@ -339,7 +341,12 @@ func obtainIDToken(ctx context.Context) (string, error) {
 		OpenBrowser:     openBrowser,
 	}
 
-	storedToken, err = oidc.Authenticate(ctx, authCfg)
+	authenticate := oidc.Authenticate
+	if loginFlags.deviceCode {
+		authenticate = oidc.AuthenticateDevice
+	}
+
+	storedToken, err = authenticate(ctx, authCfg)
 	if err != nil {
 		return "", fmt.Errorf("authentication failed: %w", err)
 	}
