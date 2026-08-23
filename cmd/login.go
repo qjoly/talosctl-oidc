@@ -36,6 +36,7 @@ var loginFlags struct {
 	clientSecret string
 	scopes       []string
 	callbackPort int
+	listenAddrs  []string
 	serverURL    string
 	contextName  string
 	talosconfig  string
@@ -61,7 +62,8 @@ func init() {
 	loginCmd.Flags().StringVar(&loginFlags.clientID, "client-id", "", "OIDC client ID (required)")
 	loginCmd.Flags().StringVar(&loginFlags.clientSecret, "client-secret", "", "OIDC client secret (optional, for confidential clients)")
 	loginCmd.Flags().StringSliceVar(&loginFlags.scopes, "scopes", []string{"openid", "profile", "email", "offline_access"}, "OIDC scopes")
-	loginCmd.Flags().IntVar(&loginFlags.callbackPort, "callback-port", 8900, "Local callback server port")
+	loginCmd.Flags().IntVar(&loginFlags.callbackPort, "callback-port", 8900, "Local callback server port (shorthand for --listen-address 127.0.0.1:PORT)")
+	loginCmd.Flags().StringSliceVar(&loginFlags.listenAddrs, "listen-address", nil, "Address the callback server listens on, repeatable for dual-stack (e.g. 10.0.0.1:8900, [fd00::1]:8900). Overrides --callback-port; the first one is used as redirect URI")
 	loginCmd.Flags().StringVar(&loginFlags.serverURL, "server", "", "Cert exchange server URL (required, e.g. https://localhost:8443)")
 	loginCmd.Flags().StringVar(&loginFlags.contextName, "context-name", "oidc", "Name for the talosconfig context")
 	loginCmd.Flags().StringVar(&loginFlags.talosconfig, "talosconfig", "", "Path to talosconfig file (default: ~/.talos/config)")
@@ -324,12 +326,12 @@ func obtainIDToken(ctx context.Context) (string, error) {
 	fmt.Printf("Authenticating with OIDC provider: %s\n", loginFlags.provider)
 
 	authCfg := oidc.AuthConfig{
-		IssuerURL:    loginFlags.provider,
-		ClientID:     loginFlags.clientID,
-		ClientSecret: loginFlags.clientSecret,
-		Scopes:       loginFlags.scopes,
-		CallbackPort: loginFlags.callbackPort,
-		OpenBrowser:  openBrowser,
+		IssuerURL:       loginFlags.provider,
+		ClientID:        loginFlags.clientID,
+		ClientSecret:    loginFlags.clientSecret,
+		Scopes:          loginFlags.scopes,
+		ListenAddresses: callbackListenAddresses(),
+		OpenBrowser:     openBrowser,
 	}
 
 	storedToken, err = oidc.Authenticate(ctx, authCfg)
@@ -355,6 +357,15 @@ func obtainIDToken(ctx context.Context) (string, error) {
 	}
 
 	return storedToken.IDToken, nil
+}
+
+// callbackListenAddresses returns the addresses the callback server binds to,
+// falling back to loopback on --callback-port when --listen-address is unset.
+func callbackListenAddresses() []string {
+	if len(loginFlags.listenAddrs) > 0 {
+		return loginFlags.listenAddrs
+	}
+	return []string{fmt.Sprintf("127.0.0.1:%d", loginFlags.callbackPort)}
 }
 
 // exchangeTokenForCert sends the ID token to the cert exchange server and returns the certificate response.
