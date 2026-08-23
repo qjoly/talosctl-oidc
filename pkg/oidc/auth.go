@@ -37,25 +37,34 @@ type AuthResult struct {
 
 // CallbackServer manages the local HTTP server that receives the OIDC callback.
 type CallbackServer struct {
-	port     int
-	server   *http.Server
-	listener net.Listener
-	resultCh chan AuthResult
-	errCh    chan error
+	addrs     []string
+	server    *http.Server
+	listeners []net.Listener
+	resultCh  chan AuthResult
+	errCh     chan error
 }
 
-// NewCallbackServer creates a new callback server on the given port.
-func NewCallbackServer(port int) (*CallbackServer, error) {
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		return nil, fmt.Errorf("failed to listen on port %d: %w", port, err)
+// NewCallbackServer listens on every given "host:port" address and serves the
+// callback on all of them, so a dual-stack host can be reached over v4 and v6.
+// The first address is the one advertised as redirect URI.
+func NewCallbackServer(addrs []string) (*CallbackServer, error) {
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("no callback listen address configured")
 	}
 
 	cs := &CallbackServer{
-		port:     port,
-		listener: listener,
+		addrs:    addrs,
 		resultCh: make(chan AuthResult, 1),
-		errCh:    make(chan error, 1),
+		errCh:    make(chan error, len(addrs)+1),
+	}
+
+	for _, addr := range addrs {
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			cs.closeListeners()
+			return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
+		}
+		cs.listeners = append(cs.listeners, listener)
 	}
 
 	mux := http.NewServeMux()
@@ -71,18 +80,26 @@ func NewCallbackServer(port int) (*CallbackServer, error) {
 	return cs, nil
 }
 
-// RedirectURI returns the callback URL for this server.
-func (cs *CallbackServer) RedirectURI() string {
-	return fmt.Sprintf("http://127.0.0.1:%d/callback", cs.port)
+func (cs *CallbackServer) closeListeners() {
+	for _, l := range cs.listeners {
+		l.Close()
+	}
 }
 
-// Start begins serving in the background.
+// RedirectURI returns the callback URL built from the first listen address.
+func (cs *CallbackServer) RedirectURI() string {
+	return fmt.Sprintf("http://%s/callback", cs.addrs[0])
+}
+
+// Start begins serving on every listener in the background.
 func (cs *CallbackServer) Start() {
-	go func() {
-		if err := cs.server.Serve(cs.listener); err != nil && err != http.ErrServerClosed {
-			cs.errCh <- err
-		}
-	}()
+	for _, l := range cs.listeners {
+		go func() {
+			if err := cs.server.Serve(l); err != nil && err != http.ErrServerClosed {
+				cs.errCh <- err
+			}
+		}()
+	}
 }
 
 // WaitForCallback blocks until the callback is received or the context is cancelled.
@@ -259,12 +276,12 @@ func Authenticate(ctx context.Context, cfg AuthConfig) (*StoredToken, error) {
 	debug("Generated OIDC state: %s", state)
 
 	// Start the local callback server.
-	callbackServer, err := NewCallbackServer(cfg.CallbackPort)
+	callbackServer, err := NewCallbackServer(cfg.ListenAddresses)
 	if err != nil {
 		return nil, err
 	}
 	callbackServer.Start()
-	debug("Callback server started on port %d", cfg.CallbackPort)
+	debug("Callback server started on %v", cfg.ListenAddresses)
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -340,6 +357,8 @@ type AuthConfig struct {
 	ClientID     string
 	ClientSecret string
 	Scopes       []string
-	CallbackPort int
-	OpenBrowser  func(url string) error
+	// ListenAddresses are the "host:port" the callback server binds to; the
+	// first one is used as the redirect URI.
+	ListenAddresses []string
+	OpenBrowser     func(url string) error
 }

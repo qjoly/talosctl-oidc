@@ -300,6 +300,22 @@ talosctl-oidc login \
   --callback-port 8900
 ```
 
+By default the callback server only listens on `127.0.0.1`. When you log in from
+a remote host, `--listen-address` lets you bind somewhere the browser can reach.
+It can be repeated to serve both address families:
+
+```bash
+talosctl-oidc login \
+  --provider https://idp.example.com/application/o/talos-oidc/ \
+  --client-id <your-client-id> \
+  --server https://localhost:8443 \
+  --listen-address 10.10.10.10:8900 \
+  --listen-address '[fd00::10]:8900'
+```
+
+The first `--listen-address` is the one sent as redirect URI, so it is the one
+to register in your OIDC client.
+
 This will:
 
 1. Open your browser to the OIDC provider login page
@@ -420,7 +436,8 @@ talosctl-oidc login [flags]
 | `--server` | Yes | | Cert exchange server URL (e.g. `https://localhost:8443`) |
 | `--client-secret` | No | | OIDC client secret (for confidential clients) |
 | `--scopes` | No | `openid,profile,email,offline_access` | OIDC scopes |
-| `--callback-port` | No | `8900` | Local callback server port |
+| `--callback-port` | No | `8900` | Local callback server port (shorthand for `--listen-address 127.0.0.1:PORT`) |
+| `--listen-address` | No | `127.0.0.1:8900` | Address the callback server listens on, repeatable. Overrides `--callback-port`; the first one is used as redirect URI |
 | `--context-name` | No | `oidc` | Name for the talosconfig context |
 | `--talosconfig` | No | `~/.talos/config` | Path to talosconfig file |
 | `--server-ca` | No | | Path to PEM CA certificate to trust for the server (for self-signed TLS) |
@@ -1236,7 +1253,7 @@ The OIDC provider is rejecting the token request. Common causes:
 - The provider is configured as a **confidential client** but no `--client-secret` was provided. Either switch to a public client or pass `--client-secret`
 - The **Client ID** is incorrect
 
-### "failed to listen on port 8900"
+### "failed to listen on 127.0.0.1:8900"
 
 Another process is using port 8900. Use `--callback-port` to pick a different port. Make sure the redirect URI in your OIDC provider matches (e.g. `http://127.0.0.1:9000/callback`).
 
