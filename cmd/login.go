@@ -37,6 +37,9 @@ var loginFlags struct {
 	scopes       []string
 	callbackPort int
 	listenAddrs  []string
+	redirectURL  string
+	localCert    string
+	localKey     string
 	serverURL    string
 	contextName  string
 	talosconfig  string
@@ -68,6 +71,9 @@ func init() {
 	loginCmd.Flags().StringSliceVar(&loginFlags.scopes, "scopes", []string{"openid", "profile", "email", "offline_access"}, "OIDC scopes")
 	loginCmd.Flags().IntVar(&loginFlags.callbackPort, "callback-port", 8900, "Local callback server port (shorthand for --listen-address 127.0.0.1:PORT)")
 	loginCmd.Flags().StringSliceVar(&loginFlags.listenAddrs, "listen-address", nil, "Address the callback server listens on, repeatable for dual-stack (e.g. 10.0.0.1:8900, [fd00::1]:8900). Overrides --callback-port; the first one is used as redirect URI")
+	loginCmd.Flags().StringVar(&loginFlags.redirectURL, "oidc-redirect-url", "", "Redirect URI advertised to the OIDC provider, when it differs from the listen address (e.g. https://talos.example.com:8900/callback)")
+	loginCmd.Flags().StringVar(&loginFlags.localCert, "local-server-cert", "", "Path to a PEM certificate to serve the local callback over HTTPS (requires --local-server-key)")
+	loginCmd.Flags().StringVar(&loginFlags.localKey, "local-server-key", "", "Path to the PEM private key matching --local-server-cert")
 	loginCmd.Flags().StringVar(&loginFlags.serverURL, "server", "", "Cert exchange server URL (required, e.g. https://localhost:8443)")
 	loginCmd.Flags().StringVar(&loginFlags.contextName, "context-name", "oidc", "Name for the talosconfig context")
 	loginCmd.Flags().StringVar(&loginFlags.talosconfig, "talosconfig", "", "Path to talosconfig file (default: ~/.talos/config)")
@@ -338,6 +344,9 @@ func obtainIDToken(ctx context.Context) (string, error) {
 		ClientSecret:    loginFlags.clientSecret,
 		Scopes:          loginFlags.scopes,
 		ListenAddresses: callbackListenAddresses(),
+		RedirectURL:     loginFlags.redirectURL,
+		TLSCertFile:     loginFlags.localCert,
+		TLSKeyFile:      loginFlags.localKey,
 		OpenBrowser:     openBrowser,
 	}
 

@@ -316,6 +316,39 @@ talosctl-oidc login \
 The first `--listen-address` is the one sent as redirect URI, so it is the one
 to register in your OIDC client.
 
+Some providers (Kanidm, for instance) refuse plain-HTTP redirect URIs. Give the
+callback server a certificate and key, and it serves HTTPS instead:
+
+```bash
+talosctl-oidc login \
+  --provider https://idp.example.com/oauth2/openid/talos \
+  --client-id <your-client-id> \
+  --server https://localhost:8443 \
+  --listen-address 127.0.0.1:8900 \
+  --local-server-cert callback.crt \
+  --local-server-key callback.key
+```
+
+The redirect URI then becomes `https://127.0.0.1:8900/callback`. The browser
+must trust that certificate, so use one signed by a CA your system knows (mkcert
+works well for local development).
+
+If the URI registered in your OIDC client differs from the address you bind to —
+TLS terminated by a reverse proxy, a hostname instead of an IP, another path —
+`--oidc-redirect-url` sends that exact URI to the provider:
+
+```bash
+talosctl-oidc login \
+  --provider https://idp.example.com/oauth2/openid/talos \
+  --client-id <your-client-id> \
+  --server https://localhost:8443 \
+  --listen-address 0.0.0.0:8900 \
+  --oidc-redirect-url https://talos.example.com/callback
+```
+
+The callback server also answers on the path of that URL, so a redirect URI
+pointing at `/oidc/cb` works without extra setup.
+
 On a host where no loopback callback is practical at all, `--device-code` uses
 the OAuth device authorization grant (RFC 8628) instead: no browser, no local
 listener, just a URL and a code to enter from another machine.
@@ -460,6 +493,9 @@ talosctl-oidc login [flags]
 | `--scopes` | No | `openid,profile,email,offline_access` | OIDC scopes |
 | `--callback-port` | No | `8900` | Local callback server port (shorthand for `--listen-address 127.0.0.1:PORT`) |
 | `--listen-address` | No | `127.0.0.1:8900` | Address the callback server listens on, repeatable. Overrides `--callback-port`; the first one is used as redirect URI |
+| `--oidc-redirect-url` | No | | Redirect URI advertised to the OIDC provider, when it differs from the listen address |
+| `--local-server-cert` | No | | Path to a PEM certificate to serve the local callback over HTTPS (requires `--local-server-key`) |
+| `--local-server-key` | No | | Path to the PEM private key matching `--local-server-cert` |
 | `--context-name` | No | `oidc` | Name for the talosconfig context |
 | `--talosconfig` | No | `~/.talos/config` | Path to talosconfig file |
 | `--server-ca` | No | | Path to PEM CA certificate to trust for the server (for self-signed TLS) |

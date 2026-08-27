@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -37,28 +39,62 @@ type AuthResult struct {
 
 // CallbackServer manages the local HTTP server that receives the OIDC callback.
 type CallbackServer struct {
-	addrs     []string
-	server    *http.Server
-	listeners []net.Listener
-	resultCh  chan AuthResult
-	errCh     chan error
+	addrs       []string
+	redirectURI string
+	useTLS      bool
+	server      *http.Server
+	listeners   []net.Listener
+	resultCh    chan AuthResult
+	errCh       chan error
 }
 
-// NewCallbackServer listens on every given "host:port" address and serves the
-// callback on all of them, so a dual-stack host can be reached over v4 and v6.
-// The first address is the one advertised as redirect URI.
-func NewCallbackServer(addrs []string) (*CallbackServer, error) {
-	if len(addrs) == 0 {
+// NewCallbackServer listens on every "host:port" in cfg.ListenAddresses and
+// serves the callback on all of them, so a dual-stack host can be reached over
+// v4 and v6. The redirect URI is derived from the first address, unless
+// cfg.RedirectURL overrides it; a cert/key pair makes the listeners speak TLS.
+func NewCallbackServer(cfg AuthConfig) (*CallbackServer, error) {
+	if len(cfg.ListenAddresses) == 0 {
 		return nil, fmt.Errorf("no callback listen address configured")
 	}
 
-	cs := &CallbackServer{
-		addrs:    addrs,
-		resultCh: make(chan AuthResult, 1),
-		errCh:    make(chan error, len(addrs)+1),
+	tlsConfig, err := cfg.callbackTLSConfig()
+	if err != nil {
+		return nil, err
 	}
 
-	for _, addr := range addrs {
+	cs := &CallbackServer{
+		addrs:    cfg.ListenAddresses,
+		useTLS:   tlsConfig != nil,
+		resultCh: make(chan AuthResult, 1),
+		errCh:    make(chan error, len(cfg.ListenAddresses)+1),
+	}
+
+	scheme := "http"
+	if cs.useTLS {
+		scheme = "https"
+	}
+	cs.redirectURI = fmt.Sprintf("%s://%s/callback", scheme, cfg.ListenAddresses[0])
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/callback", cs.handleCallback)
+	mux.HandleFunc("/logo", handleLogo)
+
+	if cfg.RedirectURL != "" {
+		u, err := url.Parse(cfg.RedirectURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid redirect URL %q: %w", cfg.RedirectURL, err)
+		}
+		if u.Scheme == "" || u.Host == "" {
+			return nil, fmt.Errorf("redirect URL %q must be absolute, e.g. https://talos.example.com:8900/callback", cfg.RedirectURL)
+		}
+		// The provider sends the browser to that exact path, so answer on it too.
+		if u.Path != "" && u.Path != "/" && u.Path != "/callback" {
+			mux.HandleFunc(u.Path, cs.handleCallback)
+		}
+		cs.redirectURI = cfg.RedirectURL
+	}
+
+	for _, addr := range cfg.ListenAddresses {
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
 			cs.closeListeners()
@@ -67,12 +103,9 @@ func NewCallbackServer(addrs []string) (*CallbackServer, error) {
 		cs.listeners = append(cs.listeners, listener)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/callback", cs.handleCallback)
-	mux.HandleFunc("/logo", handleLogo)
-
 	cs.server = &http.Server{
 		Handler:      mux,
+		TLSConfig:    tlsConfig,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
@@ -86,16 +119,23 @@ func (cs *CallbackServer) closeListeners() {
 	}
 }
 
-// RedirectURI returns the callback URL built from the first listen address.
+// RedirectURI returns the callback URL advertised to the OIDC provider.
 func (cs *CallbackServer) RedirectURI() string {
-	return fmt.Sprintf("http://%s/callback", cs.addrs[0])
+	return cs.redirectURI
 }
 
 // Start begins serving on every listener in the background.
 func (cs *CallbackServer) Start() {
 	for _, l := range cs.listeners {
 		go func() {
-			if err := cs.server.Serve(l); err != nil && err != http.ErrServerClosed {
+			var err error
+			if cs.useTLS {
+				// The key pair already lives in server.TLSConfig.
+				err = cs.server.ServeTLS(l, "", "")
+			} else {
+				err = cs.server.Serve(l)
+			}
+			if err != nil && err != http.ErrServerClosed {
 				cs.errCh <- err
 			}
 		}()
@@ -276,7 +316,7 @@ func Authenticate(ctx context.Context, cfg AuthConfig) (*StoredToken, error) {
 	debug("Generated OIDC state: %s", state)
 
 	// Start the local callback server.
-	callbackServer, err := NewCallbackServer(cfg.ListenAddresses)
+	callbackServer, err := NewCallbackServer(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -396,7 +436,33 @@ type AuthConfig struct {
 	// ListenAddresses are the "host:port" the callback server binds to; the
 	// first one is used as the redirect URI.
 	ListenAddresses []string
-	OpenBrowser     func(url string) error
+	// RedirectURL overrides the redirect URI sent to the provider, for providers
+	// that reject loopback or plain-HTTP callbacks.
+	RedirectURL string
+	// TLSCertFile and TLSKeyFile make the callback server serve HTTPS.
+	TLSCertFile string
+	TLSKeyFile  string
+	OpenBrowser func(url string) error
+}
+
+// callbackTLSConfig returns nil when the callback server should stay on plain HTTP.
+func (cfg AuthConfig) callbackTLSConfig() (*tls.Config, error) {
+	if cfg.TLSCertFile == "" && cfg.TLSKeyFile == "" {
+		return nil, nil
+	}
+	if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
+		return nil, fmt.Errorf("serving the callback over TLS needs both a certificate and a key")
+	}
+
+	cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("loading callback TLS key pair: %w", err)
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }
 
 func (cfg AuthConfig) scopesOrDefault() []string {
