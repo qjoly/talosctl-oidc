@@ -470,7 +470,15 @@ func openBrowser(url string) error {
 		return err
 	}
 
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	// Reap the browser process; its exit status is of no interest to us, but
+	// without a Wait it lingers as a zombie for the lifetime of the CLI.
+	go func() { _ = cmd.Wait() }()
+
+	return nil
 }
 
 // browserCommand builds the command that opens url, honouring --browser-command.

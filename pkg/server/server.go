@@ -275,13 +275,16 @@ func (s *Server) loadOrGenerateSelfSignedTLS() (*tls.Config, error) {
 		log.Printf("Loading persisted self-signed TLS certificates from %s", s.cfg.DataDir)
 		return tlsCfg, nil
 	}
-	if !os.IsNotExist(err) && !isPathError(err) {
+	if errors.Is(err, errCertExpired) {
+		log.Printf("Regenerating self-signed TLS certificates in %s: %v", s.cfg.DataDir, err)
+	} else if !os.IsNotExist(err) && !isPathError(err) {
 		// Unexpected error (not "file not found") — surface it.
 		return nil, fmt.Errorf("loading persisted TLS certificates: %w", err)
+	} else {
+		log.Printf("No persisted certificates found in %s, generating new ones", s.cfg.DataDir)
 	}
 
 	// Generate fresh certificates.
-	log.Printf("No persisted certificates found in %s, generating new ones", s.cfg.DataDir)
 	var caPEM, caKeyPEM, srvCertPEM, srvKeyPEM []byte
 	tlsCfg, caPEM, caKeyPEM, srvCertPEM, srvKeyPEM, err = s.generateSelfSignedMaterial()
 	if err != nil {
@@ -314,6 +317,14 @@ func (s *Server) loadOrGenerateSelfSignedTLS() (*tls.Config, error) {
 	return tlsCfg, nil
 }
 
+// selfSignedRenewBefore is how long before expiry persisted certificates are
+// considered stale and regenerated.
+const selfSignedRenewBefore = 24 * time.Hour
+
+// errCertExpired signals that persisted TLS material is past (or close to) its
+// expiry and must be regenerated rather than loaded.
+var errCertExpired = errors.New("persisted TLS certificate expired or expiring soon")
+
 // loadPersistedSelfSignedTLS loads previously saved self-signed TLS material.
 func (s *Server) loadPersistedSelfSignedTLS(caCrtPath, caKeyPath, srvCrtPath, srvKeyPath string) (*tls.Config, error) {
 	caPEM, err := os.ReadFile(caCrtPath)
@@ -333,6 +344,19 @@ func (s *Server) loadPersistedSelfSignedTLS(caCrtPath, caKeyPath, srvCrtPath, sr
 	tlsCert, err := tls.LoadX509KeyPair(srvCrtPath, srvKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading server key pair from %s / %s: %w", srvCrtPath, srvKeyPath, err)
+	}
+
+	leaf := tlsCert.Leaf
+	if leaf == nil {
+		leaf, err = x509.ParseCertificate(tlsCert.Certificate[0])
+		if err != nil {
+			return nil, fmt.Errorf("parsing persisted server certificate: %w", err)
+		}
+	}
+	// Renew a day early: a long-running server must never end up serving an
+	// expired certificate.
+	if time.Now().After(leaf.NotAfter.Add(-selfSignedRenewBefore)) {
+		return nil, fmt.Errorf("%w (server certificate expires %s)", errCertExpired, leaf.NotAfter.Format(time.RFC3339))
 	}
 
 	// Verify that the CA key can still be loaded (sanity check).
@@ -502,7 +526,9 @@ func (s *Server) handleCA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-pem-file")
-	w.Write(s.selfSignedCAPEM)
+	if _, err := w.Write(s.selfSignedCAPEM); err != nil {
+		log.Printf("/ca: writing response: %v", err)
+	}
 }
 
 // handleExchange validates an OIDC token and returns an ephemeral client certificate.
@@ -650,23 +676,22 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		TTL:       int(s.cfg.CertTTL.Seconds()),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	writeJSON(w, resp)
 
 	s.auditLog(audit.Event{
-		Type:          audit.EventCertIssued,
-		RequestID:     requestID,
-		EventCategory: "authentication",
-		EventOutcome:  "success",
-		EventAction:   "token-exchange",
-		Severity:      "INFO",
-		Subject:       tc.Subject,
-		Email:         tc.Email,
-		Issuer:        tc.Issuer,
-		ClientIP:      clientIP,
-		Roles:         roles,
-		CertTTL:       s.cfg.CertTTL.String(),
-		CertExpiry:    &certExpiry,
+		Type:            audit.EventCertIssued,
+		RequestID:       requestID,
+		EventCategory:   "authentication",
+		EventOutcome:    "success",
+		EventAction:     "token-exchange",
+		Severity:        "INFO",
+		Subject:         tc.Subject,
+		Email:           tc.Email,
+		Issuer:          tc.Issuer,
+		ClientIP:        clientIP,
+		Roles:           roles,
+		CertTTL:         s.cfg.CertTTL.String(),
+		CertExpiry:      &certExpiry,
 		CertFingerprint: fingerprint,
 	})
 
@@ -762,7 +787,18 @@ func (s *Server) validateToken(ctx context.Context, idToken string) (*tokenClaim
 func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(ErrorResponse{Error: msg})
+	if err := json.NewEncoder(w).Encode(ErrorResponse{Error: msg}); err != nil {
+		log.Printf("writing error response: %v", err)
+	}
+}
+
+// writeJSON encodes v as a JSON response body. A failed write (client gone,
+// broken pipe) is logged instead of silently dropped.
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("writing JSON response: %v", err)
+	}
 }
 
 // auditLog emits an audit event if an audit logger is configured.
@@ -860,8 +896,7 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stats := s.cfg.AdminTracker.GetStats()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	writeJSON(w, stats)
 }
 
 // handleAdminCerts returns the list of currently active (non-expired) issued certificates.
@@ -880,7 +915,5 @@ func (s *Server) handleAdminCerts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	certs := s.cfg.AdminTracker.ActiveCerts()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(certs)
+	writeJSON(w, certs)
 }
-
