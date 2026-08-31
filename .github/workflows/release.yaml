@@ -65,7 +65,7 @@ jobs:
             fi
             echo "Building ${os}/${arch}..."
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              go build -ldflags="${LDFLAGS}" -o "dist/${output}" .
+              go build -trimpath -ldflags="${LDFLAGS}" -o "dist/${output}" .
           done
 
       - name: Generate checksums
