@@ -387,3 +387,19 @@ insecure: false
 		t.Error("Insecure should be true (env override), got false")
 	}
 }
+
+func TestSplitCSV(t *testing.T) {
+	got := splitCSV("a, b ,,c,")
+	want := []string{"a", "b", "c"}
+	if len(got) != len(want) {
+		t.Fatalf("splitCSV: got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("splitCSV: got %v, want %v", got, want)
+		}
+	}
+	if splitCSV(" , ") != nil {
+		t.Fatalf("splitCSV: blank input should yield nil")
+	}
+}

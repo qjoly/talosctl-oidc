@@ -169,14 +169,14 @@ func Load(configPath string) (*ResolvedConfig, error) {
 
 	// Endpoints: env var (comma-separated) > file (list).
 	if envEndpoints := os.Getenv("TALOSCTL_OIDC_ENDPOINTS"); envEndpoints != "" {
-		rc.Endpoints = strings.Split(envEndpoints, ",")
+		rc.Endpoints = splitCSV(envEndpoints)
 	} else if len(fileCfg.Endpoints) > 0 {
 		rc.Endpoints = fileCfg.Endpoints
 	}
 
 	// Roles: env var (comma-separated) > file (list).
 	if envRoles := os.Getenv("TALOSCTL_OIDC_ROLES"); envRoles != "" {
-		rc.Roles = strings.Split(envRoles, ",")
+		rc.Roles = splitCSV(envRoles)
 	} else if len(fileCfg.Roles) > 0 {
 		rc.Roles = fileCfg.Roles
 	}
@@ -203,14 +203,14 @@ func Load(configPath string) (*ResolvedConfig, error) {
 
 	// IP allowlist: env var (comma-separated) > file.
 	if envAllowlist := os.Getenv("TALOSCTL_OIDC_IP_ALLOWLIST"); envAllowlist != "" {
-		rc.IPAllowlist = strings.Split(envAllowlist, ",")
+		rc.IPAllowlist = splitCSV(envAllowlist)
 	} else if len(fileCfg.IPAllowlist) > 0 {
 		rc.IPAllowlist = fileCfg.IPAllowlist
 	}
 
 	// Trusted proxies: env var (comma-separated) > file.
 	if envTrusted := os.Getenv("TALOSCTL_OIDC_TRUSTED_PROXIES"); envTrusted != "" {
-		rc.TrustedProxies = strings.Split(envTrusted, ",")
+		rc.TrustedProxies = splitCSV(envTrusted)
 	} else if len(fileCfg.TrustedProxies) > 0 {
 		rc.TrustedProxies = fileCfg.TrustedProxies
 	}
@@ -302,4 +302,16 @@ func envOrDefault(envKey, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// splitCSV splits a comma-separated env value, trimming spaces and dropping
+// empty entries so "a, ,b," yields ["a", "b"].
+func splitCSV(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
