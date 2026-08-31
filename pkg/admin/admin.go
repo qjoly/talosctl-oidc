@@ -73,7 +73,7 @@ type Stats struct {
 // Tracker maintains an in-memory registry of issued certs and server stats.
 // It subscribes to audit events and updates its state automatically.
 type Tracker struct {
-	mu sync.RWMutex
+	mu sync.Mutex
 
 	startedAt        time.Time
 	certs            []CertRecord
@@ -128,16 +128,7 @@ func (t *Tracker) ActiveCerts() []CertRecord {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	now := time.Now()
-
-	// Prune expired certs.
-	active := t.certs[:0]
-	for _, c := range t.certs {
-		if c.ExpiresAt.After(now) {
-			active = append(active, c)
-		}
-	}
-	t.certs = active
+	active := t.pruneExpiredLocked()
 
 	// Return a copy.
 	result := make([]CertRecord, len(active))
@@ -145,18 +136,31 @@ func (t *Tracker) ActiveCerts() []CertRecord {
 	return result
 }
 
-// GetStats returns the current server statistics.
-func (t *Tracker) GetStats() Stats {
-	activeCerts := t.ActiveCerts()
+// pruneExpiredLocked drops expired cert records and returns the remaining ones.
+// Callers must hold t.mu for writing.
+func (t *Tracker) pruneExpiredLocked() []CertRecord {
+	now := time.Now()
+	active := t.certs[:0]
+	for _, c := range t.certs {
+		if c.ExpiresAt.After(now) {
+			active = append(active, c)
+		}
+	}
+	t.certs = active
+	return active
+}
 
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+// GetStats returns the current server statistics. Everything is read under a
+// single lock so the counters and the cert count describe the same instant.
+func (t *Tracker) GetStats() Stats {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	return Stats{
 		StartedAt:          t.startedAt,
 		Uptime:             time.Since(t.startedAt).Round(time.Second).String(),
 		TotalCertsIssued:   t.totalCertsIssued,
-		ActiveCerts:        len(activeCerts),
+		ActiveCerts:        len(t.pruneExpiredLocked()),
 		TotalAuthSuccesses: t.totalAuthSuccess,
 		TotalAuthFailures:  t.totalAuthFailure,
 		TotalCertErrors:    t.totalCertErrors,
