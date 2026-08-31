@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -93,6 +94,12 @@ func init() {
 
 func runLogin(cmd *cobra.Command, args []string) error {
 	debug("Login command started")
+
+	loginFlags.talosconfig = expandHome(loginFlags.talosconfig)
+	loginFlags.serverCA = expandHome(loginFlags.serverCA)
+	loginFlags.localCert = expandHome(loginFlags.localCert)
+	loginFlags.localKey = expandHome(loginFlags.localKey)
+
 	talosconfigPath := loginFlags.talosconfig
 	if talosconfigPath == "" {
 		var err error
@@ -224,6 +231,21 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// expandHome resolves a leading ~, which no shell expands when the path comes
+// from a config file, a systemd unit or a quoted argument.
+func expandHome(path string) string {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+
+	return filepath.Join(home, strings.TrimPrefix(path, "~"))
 }
 
 // buildHTTPClient creates an HTTP client with the appropriate TLS configuration.
