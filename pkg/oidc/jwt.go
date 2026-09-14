@@ -319,10 +319,22 @@ func verifyECDSA(key *JWK, hashAlg crypto.Hash, curve elliptic.Curve, signingInp
 		return fmt.Errorf("decoding EC Y coordinate: %w", err)
 	}
 
-	pubKey := &ecdsa.PublicKey{
-		Curve: curve,
-		X:     new(big.Int).SetBytes(xBytes),
-		Y:     new(big.Int).SetBytes(yBytes),
+	// Rebuild the key from the uncompressed point encoding (0x04 || X || Y)
+	// rather than assigning the raw coordinates: ParseUncompressedPublicKey
+	// rejects points that are not on the curve, which guards against
+	// invalid-curve attacks from a hostile JWKS.
+	byteLen := (curve.Params().BitSize + 7) / 8
+	if len(xBytes) > byteLen || len(yBytes) > byteLen {
+		return fmt.Errorf("EC coordinates exceed the size of curve %s", curve.Params().Name)
+	}
+	point := make([]byte, 1+2*byteLen)
+	point[0] = 4
+	copy(point[1+byteLen-len(xBytes):1+byteLen], xBytes)
+	copy(point[1+2*byteLen-len(yBytes):], yBytes)
+
+	pubKey, err := ecdsa.ParseUncompressedPublicKey(curve, point)
+	if err != nil {
+		return fmt.Errorf("parsing EC public key: %w", err)
 	}
 
 	var h hash.Hash

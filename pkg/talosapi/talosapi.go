@@ -13,6 +13,7 @@ package talosapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -72,12 +73,12 @@ func (i *Issuer) Issue(ctx context.Context, roles []string, ttl time.Duration) (
 		CrtTtl: durationpb.New(ttl),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("Talos GenerateClientConfiguration: %w", err)
+		return nil, fmt.Errorf("generating client configuration through the Talos API: %w", err)
 	}
 
 	msgs := resp.GetMessages()
 	if len(msgs) == 0 {
-		return nil, fmt.Errorf("Talos API returned no client configuration")
+		return nil, errors.New("the Talos API returned no client configuration")
 	}
 	m := msgs[0]
 

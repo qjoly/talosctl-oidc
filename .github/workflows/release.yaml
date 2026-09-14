@@ -15,6 +15,7 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write # keyless cosign signing via the GitHub OIDC token
 
 env:
   REGISTRY: ghcr.io
@@ -64,13 +65,39 @@ jobs:
               output="${output}.exe"
             fi
             echo "Building ${os}/${arch}..."
+            # -trimpath keeps local build paths out of the binary and is a
+            # prerequisite for reproducible builds.
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              go build -ldflags="${LDFLAGS}" -o "dist/${output}" .
+              go build -trimpath -ldflags="${LDFLAGS}" -o "dist/${output}" .
           done
 
       - name: Generate checksums
         working-directory: dist
         run: sha256sum * > checksums.txt
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          artifact-name: sbom.spdx.json
+          output-file: dist/sbom.spdx.json
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4
+
+      # Keyless signing: the identity is this workflow's GitHub OIDC token, so
+      # there is no private key to hold or rotate. Signing checksums.txt covers
+      # every binary transitively, since each one is listed there by digest.
+      - name: Sign checksums and SBOM
+        working-directory: dist
+        run: |
+          for file in checksums.txt sbom.spdx.json; do
+            cosign sign-blob --yes \
+              --output-signature "${file}.sig" \
+              --output-certificate "${file}.pem" \
+              "${file}"
+          done
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
@@ -110,6 +137,7 @@ jobs:
             type=raw,value=dev,enable={{is_default_branch}}
 
       - name: Build and push server image
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -120,6 +148,20 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          sbom: true
+          provenance: mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4
+
+      # Sign by digest rather than by tag: a tag can be moved to point at a
+      # different image, a digest cannot.
+      - name: Sign server image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign sign --yes \
+            "${REGISTRY}/${IMAGE_NAME}-server@${DIGEST}"
 
   # -------------------------------------------------------------------
   # Package and push the Helm chart to GHCR OCI

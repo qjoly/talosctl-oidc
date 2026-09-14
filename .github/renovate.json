@@ -1,0 +1,45 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":semanticCommitTypeAll(chore)"
+  ],
+  "timezone": "Europe/Paris",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "labels": ["dependencies"],
+  "postUpdateOptions": ["gomodTidy"],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["dependencies", "security"],
+    "schedule": ["at any time"],
+    "prPriority": 10
+  },
+  "osvVulnerabilityAlerts": true,
+  "packageRules": [
+    {
+      "description": "Group GitHub Actions bumps into a single PR; they are low risk and noisy individually.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "semanticCommitType": "ci"
+    },
+    {
+      "description": "Group non-major Go module bumps; majors stay separate so they get a real review.",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "go modules (non-major)"
+    },
+    {
+      "description": "Talos machinery drives the certificate-issuing path — never batch it with anything else.",
+      "matchPackageNames": ["github.com/siderolabs/talos**"],
+      "groupName": null,
+      "labels": ["dependencies", "talos"]
+    },
+    {
+      "description": "The Go toolchain directive is bumped deliberately, not by a bot.",
+      "matchDepTypes": ["golang"],
+      "enabled": false
+    }
+  ]
+}
