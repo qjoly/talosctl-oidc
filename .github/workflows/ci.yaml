@@ -77,6 +77,10 @@ jobs:
       - name: staticcheck
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
 
+      # This also scans the standard library of the toolchain pinned by the `go`
+      # directive in go.mod, which setup-go installs verbatim. A Go patch release
+      # fixing a stdlib CVE therefore turns this job red with no code change —
+      # the fix is to bump the `go` directive, which Renovate does automatically.
       - name: govulncheck (known vulnerabilities)
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 

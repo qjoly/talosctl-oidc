@@ -37,9 +37,11 @@
       "labels": ["dependencies", "talos"]
     },
     {
-      "description": "The Go toolchain directive is bumped deliberately, not by a bot.",
+      "description": "Keep the Go directive on a patched release. govulncheck scans the standard library of whatever toolchain go.mod pins, so a stale patch version fails CI on its own — let the bot keep it current.",
       "matchDepTypes": ["golang"],
-      "enabled": false
+      "matchUpdateTypes": ["patch"],
+      "groupName": "go toolchain",
+      "labels": ["dependencies", "security"]
     }
   ]
 }

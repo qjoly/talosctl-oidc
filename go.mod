@@ -1,6 +1,6 @@
 module github.com/qjoly/talosctl-oidc
 
-go 1.26.1
+go 1.26.8
 
 require (
 	github.com/siderolabs/talos/pkg/machinery v1.13.5
