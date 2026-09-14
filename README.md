@@ -699,9 +699,48 @@ helm upgrade talosctl-oidc charts/talosctl-oidc/ \
   --set "ingress.hosts[0].paths[0].pathType=Prefix"
 ```
 
-This could not be the most secure option since the traffic between the ingress and the server is unencrypted.
+Note that the hop between the ingress and the pod is unencrypted. Option D keeps it encrypted.
 
-Another option could be to generate a TLS Certificate through cert-manager and map it to the server through a Kubernetes Secret (to configure SSL passthrough). This way, the connection between the ingress and the server is also encrypted, but it requires more setup (see issue)
+#### Option D — Ingress with a pod certificate (cert-manager)
+
+Give the pod its own certificate so it terminates TLS itself. cert-manager issues and rotates it; the server re-reads the keypair when it changes, so renewals need no restart.
+
+```bash
+helm upgrade talosctl-oidc charts/talosctl-oidc/ \
+  --namespace talos-system \
+  --set tls.certManager.enabled=true \
+  --set tls.certManager.issuerName=internal-ca \
+  --set tls.certManager.issuerKind=ClusterIssuer \
+  --set ingress.enabled=true \
+  --set ingress.className=nginx \
+  --set "ingress.hosts[0].host=oidc.example.com" \
+  --set "ingress.hosts[0].paths[0].path=/" \
+  --set "ingress.hosts[0].paths[0].pathType=Prefix"
+```
+
+With `ingress.tls` also set, the ingress terminates and re-encrypts to the pod. That closes the plaintext hop, but the client still only sees the ingress controller's certificate.
+
+To have the client verify the *server* end to end, add SSL passthrough so the encrypted stream reaches the pod untouched:
+
+```bash
+helm upgrade talosctl-oidc charts/talosctl-oidc/ \
+  --namespace talos-system \
+  --set tls.certManager.enabled=true \
+  --set tls.certManager.issuerName=internal-ca \
+  --set ingress.enabled=true \
+  --set ingress.className=nginx \
+  --set ingress.sslPassthrough=true \
+  --set-string 'ingress.annotations.nginx\.ingress\.kubernetes\.io/ssl-passthrough=true' \
+  --set "ingress.hosts[0].host=oidc.example.com" \
+  --set "ingress.hosts[0].paths[0].path=/" \
+  --set "ingress.hosts[0].paths[0].pathType=Prefix"
+```
+
+The passthrough annotation is controller-specific (`traefik.ingress.kubernetes.io/router.tls.passthrough` for Traefik, `haproxy.org/ssl-passthrough` for HAProxy), and the controller must have passthrough enabled globally — for ingress-nginx that is `--enable-ssl-passthrough`. The chart warns at install time if the flag is set without a matching annotation.
+
+You can also supply your own keypair instead of using cert-manager, with `--set tls.existingSecret=my-tls` (the Secret needs `tls.crt` and `tls.key`).
+
+See the [chart README](charts/talosctl-oidc/README.md#server-tls) for the full behaviour matrix.
 
 ### 5. Retrieve the server CA and log in
 

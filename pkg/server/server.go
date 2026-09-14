@@ -208,10 +208,17 @@ func (s *Server) Start() error {
 	log.Printf("Roles: %v", s.cfg.Roles)
 	log.Printf("Endpoints: %v", s.cfg.Endpoints)
 
-	// Mode 1: user-provided TLS cert + key.
+	// Mode 1: user-provided TLS cert + key. Served through a reloader so a
+	// certificate rotated in place (cert-manager renewing the mounted Secret) is
+	// picked up without restarting the pod.
 	if s.cfg.TLSCertFile != "" && s.cfg.TLSKeyFile != "" {
 		log.Printf("TLS mode: using provided certificate (%s)", s.cfg.TLSCertFile)
-		return s.httpServer.ListenAndServeTLS(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+		reloader, err := newCertReloader(s.cfg.TLSCertFile, s.cfg.TLSKeyFile, certReloadInterval)
+		if err != nil {
+			return fmt.Errorf("loading provided TLS certificate: %w", err)
+		}
+		s.httpServer.TLSConfig = reloader.tlsConfig()
+		return s.httpServer.ListenAndServeTLS("", "")
 	}
 
 	// Mode 2: insecure plain HTTP.

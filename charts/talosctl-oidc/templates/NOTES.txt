@@ -2,7 +2,7 @@
 {{- if .Values.ingress.enabled }}
 {{- range $host := .Values.ingress.hosts }}
   {{- range .paths }}
-  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
+  http{{ if or $.Values.ingress.tls $.Values.ingress.sslPassthrough }}s{{ end }}://{{ $host.host }}{{ .path }}
   {{- end }}
 {{- end }}
 {{- else if contains "NodePort" .Values.service.type }}
@@ -33,4 +33,54 @@ You must provide a Talos API credential via 'talos.existingCredentialSecret'
 (a secret containing a 'config' key), or set 'talos.apiAccess.enabled=true'.
 {{- end }}
 
-If you have enabled Ingress with TLS, the application is running in secure mode (HTTPS); TLS is handled by the Ingress Controller according to its configuration.
+TLS:
+{{- $tlsSecret := include "talosctl-oidc.tlsSecretName" . }}
+{{- if eq (include "talosctl-oidc.insecure" .) "true" }}
+The pod serves plain HTTP. TLS is terminated by the Ingress controller, so
+clients trust its certificate and do not need --server-ca.
+{{- else if .Values.tls.certManager.enabled }}
+The pod terminates TLS with the certificate cert-manager issues into the
+'{{ $tlsSecret }}' secret ({{ .Values.tls.certManager.issuerKind }} '{{ .Values.tls.certManager.issuerName }}').
+Renewals are picked up without restarting the pod. Check it was issued:
+
+  kubectl get certificate --namespace {{ .Release.Namespace }} {{ include "talosctl-oidc.fullname" . }}-tls
+{{- else if .Values.tls.existingSecret }}
+The pod terminates TLS with the keypair in the '{{ .Values.tls.existingSecret }}'
+secret. Updates to that secret are picked up without a restart.
+{{- else }}
+The pod terminates TLS with a self-signed certificate generated at startup.
+Clients must be given the CA, which the server logs and also serves at /ca:
+
+  talosctl-oidc login --server-ca server-ca.pem ...
+{{- end }}
+
+{{- if .Values.ingress.sslPassthrough }}
+
+SSL PASSTHROUGH IS ENABLED.
+{{- $hasPassthroughAnnotation := false }}
+{{- range $k, $v := .Values.ingress.annotations }}
+{{- if contains "passthrough" (lower $k) }}
+{{- $hasPassthroughAnnotation = true }}
+{{- end }}
+{{- end }}
+{{- if not $hasPassthroughAnnotation }}
+
+  WARNING: no passthrough annotation was found in ingress.annotations. The flag
+  alone does not enable passthrough — the annotation name is controller-specific,
+  so the chart cannot set it for you. Without it the controller will terminate
+  TLS while the pod also expects to, and clients will fail to connect. Add one of:
+
+    nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+    traefik.ingress.kubernetes.io/router.tls.passthrough: "true"
+    haproxy.org/ssl-passthrough: "true"
+
+  The controller must also have passthrough enabled globally
+  (ingress-nginx: --enable-ssl-passthrough).
+{{- end }}
+{{- if not $tlsSecret }}
+
+  NOTE: the pod is serving a self-signed certificate, which clients will not
+  trust on their own. Either set tls.certManager.enabled / tls.existingSecret,
+  or pass --server-ca to the client.
+{{- end }}
+{{- end }}

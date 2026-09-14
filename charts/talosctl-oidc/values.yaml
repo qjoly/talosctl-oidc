@@ -60,6 +60,28 @@ ingress:
   #    hosts:
   #      - chart-example.local
 
+  # Enable SSL passthrough, so the ingress controller forwards the encrypted
+  # stream and the pod terminates TLS itself. Use this when clients must verify
+  # the server certificate end to end (for example `talosctl-oidc login
+  # --server-ca`), because with normal termination the client only ever sees the
+  # ingress controller's certificate.
+  #
+  # Three things are required for this to work:
+  #   1. The controller must have passthrough enabled globally
+  #      (ingress-nginx: --enable-ssl-passthrough).
+  #   2. The matching annotation must be set under ingress.annotations; the name
+  #      is controller-specific, so the chart cannot infer it:
+  #        ingress-nginx  nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+  #        Traefik        traefik.ingress.kubernetes.io/router.tls.passthrough: "true"
+  #        HAProxy        haproxy.org/ssl-passthrough: "true"
+  #   3. The pod needs a certificate clients trust for the ingress host — set
+  #      tls.certManager.enabled or tls.existingSecret below. The default
+  #      self-signed certificate works only if clients pass --server-ca.
+  #
+  # When true, ingress.tls is left out of the rendered Ingress and the pod is
+  # never switched to plain HTTP.
+  sslPassthrough: false
+
 resources:
   {}
   # limits:
@@ -97,6 +119,62 @@ extraVolumes: []
 #       mountPath: /etc/my-config
 #       readOnly: true
 extraVolumeMounts: []
+
+# Server TLS
+#
+# By default the server generates a self-signed certificate at startup, and
+# clients must be given the CA (talosctl-oidc login --server-ca). The options
+# below let the pod serve a real certificate instead.
+#
+# When either source is configured the chart mounts the Secret, points
+# TALOSCTL_OIDC_TLS_CERT/KEY at it, and never switches the pod to plain HTTP.
+# The server re-reads the keypair when it changes, so renewals do not need a
+# pod restart.
+tls:
+  # Use an existing Secret containing tls.crt and tls.key. Takes precedence over
+  # certManager below.
+  existingSecret: ""
+
+  # Where the keypair is mounted in the container.
+  mountPath: /tls
+
+  certManager:
+    # Create a cert-manager Certificate resource. Requires cert-manager to be
+    # installed in the cluster: the chart does not check for the CRD, so that
+    # `helm template` and GitOps rendering keep working without cluster access.
+    enabled: false
+
+    # Name of the Issuer or ClusterIssuer to use. Required when enabled.
+    issuerName: ""
+
+    # "Issuer" (same namespace) or "ClusterIssuer" (cluster-wide).
+    issuerKind: ClusterIssuer
+
+    # Optional CommonName override. Leave empty to rely on dnsNames, which is
+    # what modern clients actually validate.
+    commonName: ""
+
+    # DNS SANs. When empty the chart derives them from how the server is
+    # reached: the ingress hosts if ingress.enabled, otherwise the in-cluster
+    # Service names (<name>, <name>.<ns>, <name>.<ns>.svc and
+    # <name>.<ns>.svc.cluster.local).
+    #
+    # The two sets are deliberately not merged: a public ACME issuer such as
+    # Let's Encrypt cannot validate a .svc.cluster.local name and would refuse
+    # the whole certificate. Set this explicitly to cover both.
+    dnsNames: []
+
+    # Certificate lifetime and how long before expiry cert-manager renews it.
+    duration: "2160h" # 90 days
+    renewBefore: "360h" # 15 days
+
+    # Optional cert-manager privateKey block, e.g. to pick an algorithm or to
+    # rotate the key on renewal:
+    #   privateKey:
+    #     algorithm: ECDSA
+    #     size: 256
+    #     rotationPolicy: Always
+    privateKey: {}
 
 # Application Configuration
 config:
