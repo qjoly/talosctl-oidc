@@ -36,6 +36,53 @@ jobs:
       - name: Test
         run: go test ./...
 
+      # Seed corpus only — a few seconds per target. Longer campaigns run in the
+      # scheduled `fuzz` job, not on every pull request.
+      - name: Fuzz targets (seed corpus)
+        run: go test ./pkg/oidc/ -run='Fuzz'
+
+  # -------------------------------------------------------------------
+  # Static analysis and dependency vulnerability scanning.
+  # Runs in parallel with `build`; a finding fails the pull request.
+  # -------------------------------------------------------------------
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # SAST. The excluded rules are whole classes of false positive for this
+      # codebase, documented here so the exclusions stay reviewable:
+      #   G104 — unhandled errors; best-effort writes to an http.ResponseWriter
+      #          and cobra's MarkFlagRequired, which only fails on a programming
+      #          error. The meaningful subset is caught by staticcheck.
+      #   G204 — subprocess with a variable; this is openBrowser deliberately
+      #          running the operator's --browser-command.
+      #   G304 — file inclusion via a variable; every site reads an
+      #          operator-supplied path (talosconfig, TLS material, audit log).
+      #   G703/G706 — taint analysis reaching those same operator-supplied paths.
+      # Anything else must be justified inline with a `#nosec Gxxx -- reason`.
+      - name: gosec (SAST)
+        run: |
+          go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 \
+            -exclude=G104,G204,G304,G703,G706 \
+            -quiet \
+            ./...
+
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+
+      # This also scans the standard library of the toolchain pinned by the `go`
+      # directive in go.mod, which setup-go installs verbatim. A Go patch release
+      # fixing a stdlib CVE therefore turns this job red with no code change —
+      # the fix is to bump the `go` directive, which Renovate does automatically.
+      - name: govulncheck (known vulnerabilities)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   # -------------------------------------------------------------------
   # Build and push the Kubernetes server image with pr-<number> tag

@@ -27,6 +27,8 @@ const (
 // if the keychain is unavailable or the data is too large.
 func Store(contextName string, token *oidc.StoredToken) error {
 	debug("Storing token for context: %s", contextName)
+	// #nosec G117 -- serialising the token is this package's purpose; the result
+	// goes to the OS keychain, or to a 0600 file when the keychain is unavailable.
 	data, err := json.Marshal(token)
 	if err != nil {
 		return fmt.Errorf("marshaling token: %w", err)
@@ -196,6 +198,7 @@ func writeTokenFile(path string, m tokenMap) error {
 		return fmt.Errorf("creating cache directory %s: %w", dir, err)
 	}
 
+	// #nosec G117 -- see Store: the cache file is written with 0600 in a 0700 dir.
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling token cache: %w", err)

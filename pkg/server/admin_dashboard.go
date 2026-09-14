@@ -363,7 +363,10 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set session cookie
+	// Set session cookie.
+	// #nosec G124 -- Secure is set whenever the request arrived over TLS; it is
+	// deliberately relaxed for plain HTTP so the dashboard stays usable when TLS
+	// is terminated upstream (TALOSCTL_OIDC_INSECURE / ingress offload).
 	cookie := &http.Cookie{
 		Name:     cookieName,
 		Value:    sessionToken,
@@ -392,41 +395,20 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 		s.adminSessions.delete(sessionToken)
 	}
 
-	// Clear cookie
+	// Clear cookie. The attributes must match the ones used when the cookie was
+	// set, otherwise some browsers keep the original cookie alive.
+	// #nosec G124 -- mirrors the attributes set in handleAdminLogin.
 	cookie := &http.Cookie{
 		Name:     cookieName,
 		Value:    "",
 		Path:     "/admin/",
 		HttpOnly: true,
+		Secure:   r.TLS != nil || strings.HasPrefix(r.Proto, "HTTPS"),
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	}
 	http.SetCookie(w, cookie)
 
 	// Redirect to login page
 	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
-}
-
-// requireAdminSession wraps a handler with session validation
-func (s *Server) requireAdminSession(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Allow GET requests to the root /admin/ without session (will show login form)
-		if r.Method == http.MethodGet && r.URL.Path == "/admin/" {
-			next(w, r)
-			return
-		}
-
-		// Check for session
-		if s.adminSessions == nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
-
-		sessionToken := getSessionToken(r)
-		if sessionToken == "" || !s.adminSessions.validate(sessionToken) {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
-
-		next(w, r)
-	}
 }

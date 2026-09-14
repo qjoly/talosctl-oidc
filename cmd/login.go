@@ -257,7 +257,7 @@ func buildHTTPClient() (*http.Client, error) {
 		return &http.Client{
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
-					InsecureSkipVerify: true, //nolint:gosec // user explicitly opted in
+					InsecureSkipVerify: true, // #nosec G402 -- guarded by the explicit --insecure flag
 				},
 			},
 			Timeout: 30 * time.Second,

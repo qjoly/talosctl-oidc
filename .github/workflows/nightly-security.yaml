@@ -1,0 +1,74 @@
+name: Nightly security
+
+# Two things that need to run on a clock rather than on a diff:
+#   - govulncheck, because new advisories land against unchanged code;
+#   - fuzzing, because it only finds what it has had time to reach. The pull
+#     request job just replays the seed corpus.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "Fuzz duration per target (Go duration, e.g. 10m)"
+        required: false
+        type: string
+        default: "10m"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - FuzzValidateIDToken
+          - FuzzValidateIDTokenAllowedAlgs
+          - FuzzFetchJWKSParse
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Fuzz ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+          # Empty on a schedule run, where workflow_dispatch inputs are absent.
+          FUZZTIME: ${{ inputs.fuzztime }}
+        run: |
+          go test ./pkg/oidc/ \
+            -run="^${TARGET}\$" \
+            -fuzz="^${TARGET}\$" \
+            -fuzztime="${FUZZTIME:-10m}"
+
+      # A crasher is written to testdata/fuzz/<target>/; keep it so the failure
+      # can be reproduced locally with `go test ./pkg/oidc/ -run=<target>`.
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: fuzz-crashers-${{ matrix.target }}
+          path: pkg/oidc/testdata/fuzz/
+          if-no-files-found: ignore

@@ -1285,6 +1285,54 @@ Talos does not support CRL (Certificate Revocation List) or OCSP checks on clien
 
 This strategy is documented as a compensating control for ISO 27001 A.9.2.6 (removal or adjustment of access rights). The combination of a short TTL and IdP revocation provides an effective access removal window bounded by the certificate TTL.
 
+### Supply Chain and Secure Development (ISO 27001 A.14.2.8)
+
+Every pull request runs static analysis and dependency scanning; a finding fails the build.
+
+| Check | Tool | Where |
+|---|---|---|
+| SAST | [`gosec`](https://github.com/securego/gosec) | `ci.yaml` → `security` job |
+| Static analysis | [`staticcheck`](https://staticcheck.dev) | `ci.yaml` → `security` job |
+| Known vulnerabilities | [`govulncheck`](https://go.dev/blog/vuln) | `ci.yaml`, plus nightly |
+| Dependency updates | Renovate (`.github/renovate.json`) | Weekly, security fixes immediately |
+| Fuzzing | `go test -fuzz` on the JWT and JWKS parsers | Seed corpus per PR, 10 min/target nightly |
+
+`gosec` excludes five rule classes that are structurally false-positive here (operator-supplied file paths, the browser subprocess, best-effort response writes). The rationale is documented inline in `ci.yaml`, and any other finding must be justified at the call site with a `#nosec Gxxx -- reason` comment.
+
+Release binaries are built with `-trimpath` so local build paths do not leak into the artifacts.
+
+#### Verifying a release
+
+Releases are signed with [cosign](https://docs.sigstore.dev) using keyless signing — the identity is the GitHub Actions workflow itself, so there is no public key to distribute. Each release ships `checksums.txt`, an SPDX SBOM, and a `.sig`/`.pem` pair for both.
+
+```bash
+VERSION=v0.1.0
+REPO=qjoly/talosctl-oidc
+
+# Download the checksums and their signature
+curl -fsSLO "https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt"
+curl -fsSLO "https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt.sig"
+curl -fsSLO "https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt.pem"
+
+# Verify the signature came from this repository's release workflow
+cosign verify-blob checksums.txt \
+  --signature checksums.txt.sig \
+  --certificate checksums.txt.pem \
+  --certificate-identity-regexp "^https://github.com/${REPO}/.github/workflows/release.yaml@refs/tags/" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+# Then check your binary against the verified checksums
+sha256sum --ignore-missing -c checksums.txt
+```
+
+The container image is signed by digest:
+
+```bash
+cosign verify ghcr.io/qjoly/talosctl-oidc-server:v0.1.0 \
+  --certificate-identity-regexp "^https://github.com/qjoly/talosctl-oidc/.github/workflows/release.yaml@refs/tags/" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
 ## Debugging
 
 You can enable detailed internal tracing for both the client and the server by setting the `DEBUG` environment variable to any non-empty value.

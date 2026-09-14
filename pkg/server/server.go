@@ -490,11 +490,6 @@ func (s *Server) generateSelfSignedTLSInMemory() (*tls.Config, error) {
 	return tlsCfg, err
 }
 
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
 // isPathError reports whether err is (or wraps) an *os.PathError whose inner
 // error satisfies os.IsNotExist. This handles cases where os.IsNotExist does
 // not unwrap wrapped errors.
@@ -836,47 +831,6 @@ func (s *Server) requireAdminToken(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		next(w, r)
-	}
-}
-
-// requireAdminAuth wraps a handler with either bearer token or session authentication.
-// This is used for endpoints that should be accessible both via API and web dashboard.
-func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.AdminToken == "" {
-			writeError(w, http.StatusForbidden, "admin API is disabled (no TALOSCTL_OIDC_ADMIN_TOKEN configured)")
-			return
-		}
-
-		// Check for Bearer token first
-		auth := r.Header.Get("Authorization")
-		if auth != "" {
-			const prefix = "Bearer "
-			if strings.HasPrefix(auth, prefix) {
-				token := auth[len(prefix):]
-				if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.AdminToken)) == 1 {
-					// Valid bearer token
-					next(w, r)
-					return
-				}
-			}
-			// Invalid bearer token format or value
-			writeError(w, http.StatusForbidden, "invalid admin token")
-			return
-		}
-
-		// Check for session cookie
-		if s.adminSessions != nil {
-			sessionToken := getSessionToken(r)
-			if sessionToken != "" && s.adminSessions.validate(sessionToken) {
-				// Valid session
-				next(w, r)
-				return
-			}
-		}
-
-		// No valid authentication found
-		writeError(w, http.StatusUnauthorized, "missing or invalid authentication")
 	}
 }
 
