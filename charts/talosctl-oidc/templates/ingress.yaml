@@ -15,7 +15,12 @@ spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
   {{- end }}
-  {{- if .Values.ingress.tls }}
+  {{- /*
+    Under SSL passthrough the controller forwards the encrypted stream to the
+    pod, so a tls block here would be misleading: no certificate is served at
+    this level. The pod's own certificate is what clients see.
+  */}}
+  {{- if and .Values.ingress.tls (not .Values.ingress.sslPassthrough) }}
   tls:
     {{- range .Values.ingress.tls }}
     - hosts:

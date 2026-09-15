@@ -1,3 +1,4 @@
+{{- $tlsSecret := include "talosctl-oidc.tlsSecretName" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -48,7 +49,16 @@ spec:
               protocol: TCP
           env:
             - name: TALOSCTL_OIDC_INSECURE
-              value: {{ if or .Values.config.insecure (and .Values.ingress.enabled .Values.ingress.tls) }}"true"{{ else }}"false"{{ end }}
+              value: {{ include "talosctl-oidc.insecure" . | quote }}
+            {{- if $tlsSecret }}
+            # The pod terminates TLS itself with this keypair. The server
+            # re-reads it when it changes, so a cert-manager renewal is picked
+            # up without restarting the pod.
+            - name: TALOSCTL_OIDC_TLS_CERT
+              value: "{{ .Values.tls.mountPath }}/tls.crt"
+            - name: TALOSCTL_OIDC_TLS_KEY
+              value: "{{ .Values.tls.mountPath }}/tls.key"
+            {{- end }}
             # Talos API credential (talosconfig) provisioned by the Kubernetes
             # Talos API access feature. The server signs nothing locally.
             - name: TALOSCTL_OIDC_TALOS_CONFIG
@@ -109,6 +119,11 @@ spec:
             - name: talos-credential
               mountPath: {{ .Values.talos.configMountPath | quote }}
               readOnly: true
+            {{- if $tlsSecret }}
+            - name: tls
+              mountPath: {{ .Values.tls.mountPath | quote }}
+              readOnly: true
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -118,6 +133,11 @@ spec:
         - name: talos-credential
           secret:
             secretName: {{ .Values.talos.existingCredentialSecret | default (printf "%s-talos" (include "talosctl-oidc.fullname" .)) }}
+        {{- if $tlsSecret }}
+        - name: tls
+          secret:
+            secretName: {{ $tlsSecret }}
+        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

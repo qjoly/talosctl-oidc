@@ -1,0 +1,42 @@
+{{- if .Values.tls.certManager.enabled }}
+{{- if .Values.tls.existingSecret }}
+{{- fail "talosctl-oidc: set either tls.existingSecret or tls.certManager.enabled, not both." }}
+{{- end }}
+{{- if not .Values.tls.certManager.issuerName }}
+{{- fail "talosctl-oidc: tls.certManager.issuerName is required when tls.certManager.enabled=true." }}
+{{- end }}
+{{- if not (has .Values.tls.certManager.issuerKind (list "Issuer" "ClusterIssuer")) }}
+{{- fail "talosctl-oidc: tls.certManager.issuerKind must be \"Issuer\" or \"ClusterIssuer\"." }}
+{{- end }}
+# Requires cert-manager in the cluster. The chart does not gate on the CRD being
+# present, so that `helm template` and GitOps rendering keep working without
+# cluster access; a missing CRD surfaces as a rejected apply.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "talosctl-oidc.fullname" . }}-tls
+  labels:
+    {{- include "talosctl-oidc.labels" . | nindent 4 }}
+spec:
+  # Must match talosctl-oidc.tlsSecretName, which is what the Deployment mounts.
+  secretName: {{ include "talosctl-oidc.fullname" . }}-tls
+  issuerRef:
+    name: {{ .Values.tls.certManager.issuerName }}
+    kind: {{ .Values.tls.certManager.issuerKind }}
+    group: cert-manager.io
+  {{- with .Values.tls.certManager.commonName }}
+  commonName: {{ . | quote }}
+  {{- end }}
+  dnsNames:
+    {{- include "talosctl-oidc.certDNSNames" . | nindent 4 }}
+  duration: {{ .Values.tls.certManager.duration | quote }}
+  renewBefore: {{ .Values.tls.certManager.renewBefore | quote }}
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  {{- with .Values.tls.certManager.privateKey }}
+  privateKey:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
