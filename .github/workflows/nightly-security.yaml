@@ -72,3 +72,26 @@ jobs:
           name: fuzz-crashers-${{ matrix.target }}
           path: pkg/oidc/testdata/fuzz/
           if-no-files-found: ignore
+
+  # A red scheduled run notifies nobody, so the failure is surfaced as an issue.
+  # One open issue is reused and commented on, to avoid a new issue every night.
+  report-failure:
+    needs: [govulncheck, fuzz]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or update tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly security workflow is failing"
+          number=$(gh issue list --state open --search "\"${title}\" in:title" --json number,title \
+            --jq "map(select(.title == \"${title}\")) | .[0].number // empty")
+          if [ -n "${number}" ]; then
+            gh issue comment "${number}" --body "Still failing: ${RUN_URL}"
+          else
+            gh issue create --title "${title}" --label security \
+              --body "The scheduled security run failed: ${RUN_URL}. Close this issue once the workflow is green again."
+          fi
