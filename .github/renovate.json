@@ -13,8 +13,7 @@
   "vulnerabilityAlerts": {
     "enabled": true,
     "labels": ["dependencies", "security"],
-    "schedule": ["at any time"],
-    "prPriority": 10
+    "schedule": ["at any time"]
   },
   "osvVulnerabilityAlerts": true,
   "packageRules": [
@@ -25,16 +24,21 @@
       "semanticCommitType": "ci"
     },
     {
-      "description": "Group non-major Go module bumps; majors stay separate so they get a real review.",
+      "description": "Group non-major Go module bumps; majors stay separate so they get a real review. Talos is excluded here: a later groupName: null does not ungroup it.",
       "matchManagers": ["gomod"],
+      "matchPackageNames": ["!github.com/siderolabs/talos**"],
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "go modules (non-major)"
     },
     {
       "description": "Talos machinery drives the certificate-issuing path — never batch it with anything else.",
       "matchPackageNames": ["github.com/siderolabs/talos**"],
-      "groupName": null,
       "labels": ["dependencies", "talos"]
+    },
+    {
+      "description": "Without bump, Renovate treats the go directive as a minimum and never raises it. Must be its own rule: rangeStrategy cannot be combined with matchUpdateTypes.",
+      "matchDepTypes": ["golang"],
+      "rangeStrategy": "bump"
     },
     {
       "description": "Keep the Go directive on a patched release. govulncheck scans the standard library of whatever toolchain go.mod pins, so a stale patch version fails CI on its own — let the bot keep it current.",
