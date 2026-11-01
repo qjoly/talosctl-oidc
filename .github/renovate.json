@@ -24,15 +24,15 @@
       "semanticCommitType": "ci"
     },
     {
-      "description": "Group non-major Go module bumps; majors stay separate so they get a real review. Talos is excluded here: a later groupName: null does not ungroup it.",
+      "description": "Group non-major Go module bumps; majors stay separate so they get a real review. Talos is excluded here: a later groupName: null does not ungroup it. A bare talos** glob does not cross \"/\", hence the {,/**} form.",
       "matchManagers": ["gomod"],
-      "matchPackageNames": ["!github.com/siderolabs/talos**"],
+      "matchPackageNames": ["!github.com/siderolabs/talos{,/**}"],
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "go modules (non-major)"
     },
     {
       "description": "Talos machinery drives the certificate-issuing path — never batch it with anything else.",
-      "matchPackageNames": ["github.com/siderolabs/talos**"],
+      "matchPackageNames": ["github.com/siderolabs/talos{,/**}"],
       "labels": ["dependencies", "talos"]
     },
     {
@@ -46,6 +46,12 @@
       "matchUpdateTypes": ["patch"],
       "groupName": "go toolchain",
       "labels": ["dependencies", "security"]
+    },
+    {
+      "description": "A Go minor (go.mod directive and the golang builder image) ships as one reviewed PR instead of riding along with the non-major group.",
+      "matchPackageNames": ["go", "golang"],
+      "matchUpdateTypes": ["minor", "major"],
+      "groupName": "go minor toolchain"
     }
   ]
 }
