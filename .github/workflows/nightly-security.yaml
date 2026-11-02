@@ -67,7 +67,7 @@ jobs:
       # can be reproduced locally with `go test ./pkg/oidc/ -run=<target>`.
       - name: Upload crashers
         if: failure()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-crashers-${{ matrix.target }}
           path: pkg/oidc/testdata/fuzz/
